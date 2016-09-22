@@ -4,6 +4,7 @@
 module TMM.Workers where
 
 import TMM.Types
+import qualified TMM.Downloader as DL
 import Control.Concurrent
 import Control.Concurrent.Chan
 import qualified Data.Text as T
@@ -12,7 +13,7 @@ import qualified Data.Text.Encoding as E
 import qualified Data.Text.ICU.Convert as ICU  -- text-icu
 import qualified Data.Text.ICU as ICU
 import Control.Exception
-import qualified Data.ByteString.Lazy.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as LB
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
 
@@ -57,23 +58,25 @@ waitClosed s =  takeMVar (_endFlag s) >> return ()
 
 startSpider :: Spider -> StartsUrls -> IO ()
 startSpider spider urls = do
-  manager <- newManager tlsManagerSettings
-  forkIO (downloading spider manager)
+  -- manager <- newManager tlsManagerSettings
+  -- forkIO (downloading spider manager)
+  downloader <- DL.newDownloader []
+  forkIO (downloading spider downloader)
   forkIO (parsing spider)
   forkIO (processing spider >> putMVar (_endFlag spider) True)
   mapM_ (\(m, u) -> writeChan (_taskQueue spider) (RequestTask m u)) urls
   where
-    downloading s@(Spider taskq tl dataq _ _ _ _ _ _) manager = do
+    downloading s@(Spider taskq tl dataq _ _ _ _ _ _) downloader = do
       withChannel2 "downloader" taskq (getVar tl) dataq $ \task -> do
         case task of
           RequestTask t url -> do
-            txt <- fetchPage manager url
-            return $ [ResponseData t txt]
+            (DL.TextData _ txt) <- DL.download downloader url
+            return $ [ResponseText t txt]
     
     parsing s@(Spider _ _ dataq dl resultq _ p _ _) = do
       withChannel2 "parser" dataq (getVar dl) resultq $ \resp -> do
         case resp of
-          ResponseData t txt -> return $ p t txt
+          ResponseText t txt -> return $ p t txt
 
     processing s@(Spider taskq _ _ _ resultq rl _ p _) =
       withChannel2 "processor" resultq (getVar rl) taskq $ \result -> do
@@ -81,7 +84,7 @@ startSpider spider urls = do
         DataResult t v -> p t v >> return []
         UrlResult t url -> return $ [RequestTask t url]
         _ -> error "should not come here"
-        
+
 readChannel :: Lighter -> Chan a -> IO a
 readChannel lt chan = do
   turnOff lt
@@ -170,7 +173,7 @@ startDownloader taskq dataq = do
         TaskEnd -> return ()
         RequestTask t url -> do
           txt <- fetchPage manager url
-          writeChan dataq (ResponseData t txt)
+          writeChan dataq (ResponseText t txt)
           loop manager
   
 fetchPage :: Manager -> String -> IO T.Text
@@ -180,7 +183,7 @@ fetchPage manager url = do
   resp <- httpLbs req manager
   gbk <- ICU.open "gbk" Nothing
   let txt :: T.Text
-      txt = ICU.toUnicode gbk $ B.toStrict $ responseBody resp
+      txt = ICU.toUnicode gbk $ LB.toStrict $ responseBody resp
   putStrLn $ "* page downloaded "
   return txt
 
@@ -195,7 +198,7 @@ startParser dataq resultq p = do
       putStrLn "parser: got content"
       case resp of
         ResponseEnd -> return ()
-        ResponseData t txt -> do
+        ResponseText t txt -> do
           let rx = p t txt
           mapM_ (writeChan resultq) rx
           loop

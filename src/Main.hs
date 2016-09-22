@@ -5,6 +5,7 @@
 import TMM.Types
 import TMM.Selector
 import TMM.Workers
+import TMM.Downloader
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -59,7 +60,7 @@ main3 = do
   waitClosed spider
   -- getLine
   where
-    urls = [(M.singleton "type" "list", gotPageUrl 112)]
+    urls = map (\i -> (M.singleton "type" "list", gotPageUrl i)) [120..139]
 
 mmParser :: Meta -> T.Text -> [ParseResult]
 mmParser meta txt = case M.lookup "type" meta of
@@ -99,8 +100,8 @@ detailInfoParser meta txt = pick $ select1 ".mm-p-base-info ul" tags
   where
     tags = parseTags txt
     m2f fn = fn .= (meta ! fn)
-    pick tx = let height = fromJust $ T.stripSuffix "CM" $ extract "ul .mm-p-height p" tx
-                  weight = fromJust $ T.stripSuffix "KG" $ extract "ul .mm-p-weight p" tx
+    pick tx = let height = fromMaybe "1" $ T.stripSuffix "CM" $ extract "ul .mm-p-height p" tx
+                  weight = fromMaybe "1" $ T.stripSuffix "KG" $ extract "ul .mm-p-weight p" tx
                   size = extract "ul .mm-p-size p" tx
                   cup = extract "ul .mm-p-bar p" tx
                   shoe = extract "ul .mm-p-shose p" tx
@@ -111,7 +112,7 @@ detailInfoParser meta txt = pick $ select1 ".mm-p-base-info ul" tags
                            , m2f "photoUrl"]
 
 listPageParser :: Meta -> T.Text -> [ParseResult]
-listPageParser  meta txt = map pick $ select ".list-item .personal-info" tags
+listPageParser  meta txt = map pick $ select ".personal-info" tags
   where
     pick1 tx = let top = select1 ".top" tx
                    name = extract ".top .lady-name" top
@@ -222,6 +223,7 @@ analys chan n = loop n []
      
 gotPageUrl :: Int -> String
 gotPageUrl i = "https://mm.taobao.com/json/request_top_list.htm?page=" ++ show i
+-- gotPageUrl i = "http://localhost:8080/json/request_top_list.htm?page=" ++ show i
 
 gotDetailUrl :: T.Text -> String
 gotDetailUrl i =  "https://mm.taobao.com//self/info/model_info_show.htm?user_id= "

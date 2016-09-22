@@ -18,7 +18,8 @@ data RequestTask = RequestTask !Meta !String
                  | TaskEnd
 type TaskQueue = Chan RequestTask
 
-data ResponseData = ResponseData !Meta !Text
+data ResponseData = ResponseText !Meta !Text
+                  | ResponseBin !Meta !Text
                   | ResponseEnd
 type DataQueue = Chan ResponseData
 
