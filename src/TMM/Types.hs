@@ -7,6 +7,7 @@ import Control.Concurrent.Chan (Chan)
 import Data.Text (Text)
 import Data.Aeson (Value)
 import Data.HashMap.Strict (HashMap)
+import Data.ByteString.Lazy.Char8 (ByteString)
 
 type Meta = HashMap Text Text
 
@@ -19,7 +20,7 @@ data RequestTask = RequestTask !Meta !String
 type TaskQueue = Chan RequestTask
 
 data ResponseData = ResponseText !Meta !Text
-                  | ResponseBin !Meta !Text
+                  | ResponseBin !Meta !ByteString
                   | ResponseEnd
 type DataQueue = Chan ResponseData
 

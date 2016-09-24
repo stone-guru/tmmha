@@ -60,19 +60,26 @@ startSpider :: Spider -> StartsUrls -> IO ()
 startSpider spider urls = do
   -- manager <- newManager tlsManagerSettings
   -- forkIO (downloading spider manager)
-  downloader <- DL.newDownloader []
-  forkIO (downloading spider downloader)
+  fdownload <- DL.newDownloader []
+  forkIO (downloading spider fdownload)
   forkIO (parsing spider)
   forkIO (processing spider >> putMVar (_endFlag spider) True)
   mapM_ (\(m, u) -> writeChan (_taskQueue spider) (RequestTask m u)) urls
   where
-    downloading s@(Spider taskq tl dataq _ _ _ _ _ _) downloader = do
+    downloading s@(Spider taskq tl dataq _ _ _ _ _ _) fdownload = do
       withChannel2 "downloader" taskq (getVar tl) dataq $ \task -> do
         case task of
           RequestTask t url -> do
-            (DL.TextData _ txt) <- DL.download downloader url
-            return $ [ResponseText t txt]
-    
+            respData <- fdownload url
+            case respData of
+              (DL.TextData _ _ txt) ->
+                return $ [ResponseText t txt]
+              (DL.BinaryData _ _ bin) ->
+                return $ [ResponseBin t bin]
+              _ -> do
+                putStrLn ("Worker: Failed download : " ++ url)
+                return []
+  
     parsing s@(Spider _ _ dataq dl resultq _ p _ _) = do
       withChannel2 "parser" dataq (getVar dl) resultq $ \resp -> do
         case resp of
@@ -265,6 +272,29 @@ withChannel2 msg cha v chb f =
     modify v b = do
       _ <- takeMVar v
       putMVar v b
+
+-- linkChannel :: String -> Chan (Maybe a) -> MVar Bool  -> Chan (Maybe b) -> (a -> IO [b]) -> IO ()
+-- linkChannel msg cha v chb f =
+--   repeatDo msg $ bracket
+--   (do
+--       putStrLn $ msg ++ " waiting next"
+--       readChan cha)
+--   (\_ -> modify v False)
+--   (\x_ -> do 
+--       modify v True
+--       putStrLn $ msg ++ " got one"
+--       case x_ of
+--         Nothing -> do
+--           writeChan chb Nothing
+--           return False
+--         Just x -> do
+--           yx <- f x
+--           mapM_ (writeChan chb) yx
+--           return True)
+--   where
+--     modify v b = do
+--       _ <- takeMVar v
+--       putMVar v b
     
                      
     

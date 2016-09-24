@@ -60,7 +60,7 @@ main3 = do
   waitClosed spider
   -- getLine
   where
-    urls = map (\i -> (M.singleton "type" "list", gotPageUrl i)) [120..139]
+    urls = map (\i -> (M.singleton "type" "list", gotPageUrl i)) [120..120]
 
 mmParser :: Meta -> T.Text -> [ParseResult]
 mmParser meta txt = case M.lookup "type" meta of
