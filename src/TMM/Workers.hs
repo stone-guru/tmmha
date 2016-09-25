@@ -1,116 +1,183 @@
 -- -*- coding: utf-8 -*-
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
-module TMM.Workers where
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+module TMM.Workers(
+  Spider(),
+  newSpider,
+  startSpider,
+  isIdle,
+  waitIdle,
+  waitEnd,
+  askClose,
+  waitClosed
+  )where
 
 import TMM.Types
 import qualified TMM.Downloader as DL
+import Control.Monad  
 import Control.Concurrent
 import Control.Concurrent.Chan
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
-import qualified Data.Text.Encoding as E
-import qualified Data.Text.ICU.Convert as ICU  -- text-icu
-import qualified Data.Text.ICU as ICU
+import qualified Data.List as L
 import Control.Exception
-import qualified Data.ByteString.Lazy.Char8 as LB
-import Network.HTTP.Client
-import Network.HTTP.Client.TLS
+import qualified Data.HashMap.Strict as M
+import Control.DeepSeq
 
-data Lighter = Lighter (MVar Bool)
-  
+class Octopus a where
+  newInstance :: ShParser -> ShProcessor -> IO a
+  isInstIdle :: a -> IO Bool
+  waitIntClosed :: a -> IO ()
+
+type PilotLight = MVar Bool
+
 data Spider = Spider { _taskQueue :: TaskQueue
-                     , _taskLighter :: Lighter
+                     , _taskLight :: PilotLight
                      , _dataQueue :: DataQueue
-                     , _dataLighter :: Lighter
+                     , _dataLight :: PilotLight
                      , _resultQueue :: ResultQueue
-                     , _resultLighter :: Lighter
-                     , _parser :: TmmParser
-                     , _processor :: TmmProcessor
+                     , _resultLight :: PilotLight
+                     , _parser :: ShParser
+                     , _processor :: ShProcessor
                      , _endFlag :: MVar Bool
                      }
 
-newSpider :: TmmParser -> TmmProcessor -> IO Spider
+newSpider :: ShParser -> ShProcessor -> IO Spider
 newSpider prs prc = do
   taskq <- newChan
   dataq <- newChan
   resultq <- newChan
-  tl <- newLighter
-  dl <- newLighter
-  rl <- newLighter
-  ev <- newEmptyMVar
-  return $ Spider taskq tl dataq dl resultq rl prs prc ev
-
-isIdle :: Spider -> IO Bool
-isIdle (Spider _ tl _ dl _ rl _ _ _) = do
-  tb <- isLighterOn tl
-  if tb
-    then return False
-    else do
-      db <- isLighterOn dl
-      if db
-        then return False
-        else isLighterOn rl
-
-waitClosed :: Spider -> IO ()
-waitClosed s =  takeMVar (_endFlag s) >> return ()
-
+  tpl <- newMVar False
+  dpl <- newMVar False
+  rpl <- newMVar False
+  ef <- newEmptyMVar
+  return $ Spider taskq tpl dataq dpl resultq rpl prs prc ef
 
 startSpider :: Spider -> StartsUrls -> IO ()
 startSpider spider urls = do
-  -- manager <- newManager tlsManagerSettings
-  -- forkIO (downloading spider manager)
   fdownload <- DL.newDownloader []
-  forkIO (downloading spider fdownload)
-  forkIO (parsing spider)
-  forkIO (processing spider >> putMVar (_endFlag spider) True)
-  mapM_ (\(m, u) -> writeChan (_taskQueue spider) (RequestTask m u)) urls
+  forkIO (downloadRoute spider fdownload "downloader1")
+  -- forkIO (downloadRoute spider fdownload "downloader2")
+  forkIO (parseRoute spider)
+  forkIO (processRoute spider >> putMVar (_endFlag spider) True)
+  mapM_  feedStartsUrl urls
   where
-    downloading s@(Spider taskq tl dataq _ _ _ _ _ _) fdownload = do
-      withChannel2 "downloader" taskq (getVar tl) dataq $ \task -> do
-        case task of
-          RequestTask t url -> do
-            respData <- fdownload url
-            case respData of
-              (DL.TextData _ _ txt) ->
-                return $ [ResponseText t txt]
-              (DL.BinaryData _ _ bin) ->
-                return $ [ResponseBin t bin]
-              _ -> do
-                putStrLn ("Worker: Failed download : " ++ url)
-                return []
+    feedStartsUrl (t, url) = writeChan (_taskQueue spider) $ Just $ TaskData t M.empty url
+
+downloadRoute :: Spider -> DL.Downloader -> String -> IO ()
+downloadRoute s dl rn = mapChannel rn
+                         (_taskQueue s) (_taskLight s) (_dataQueue s) download
+  where
+    download (TaskData t meta url) = do
+      d <- dl url
+      case d of
+        DL.ResponseData url ctype ctx ->
+          return $! [OriginData t  ctype (fillUrl url meta) (ctx2Origin ctx)]
+        DL.NoData -> do
+          putStrLn $ "error got page " ++ url
+          return []
+    fillUrl url meta = M.insert "url" (T.pack url) meta
+    ctx2Origin (Left text) = OriginText text
+    ctx2Origin (Right bin) = OriginBinary bin
+
+
+parseRoute :: Spider -> IO ()
+parseRoute s = mapChannel "parser"
+                 (_dataQueue s) (_dataLight s) (_resultQueue s)
+                 (\x -> do
+                     y <- _parser s x
+                     return $! y)
+
+processRoute :: Spider -> IO ()
+processRoute s = mapChannel "process"
+                    (_resultQueue s) (_resultLight s) (_taskQueue s) process
+  where
+    process yd = if isUrl yd then return [toTask yd] else
+      do
+        _processor s (yd2rd yd)
+        return []
   
-    parsing s@(Spider _ _ dataq dl resultq _ p _ _) = do
-      withChannel2 "parser" dataq (getVar dl) resultq $ \resp -> do
-        case resp of
-          ResponseText t txt -> return $ p t txt
+    isUrl (YieldData _ _ (YieldUrl _)) = True
+    isUrl _ = False
+  
+    toTask (YieldData t meta (YieldUrl url)) = TaskData t meta url
+  
+    yd2rd (YieldData t m ent) = ResultData t m (ye2re ent)
+    ye2re (YieldBinary b) = ResultBinary b
+    ye2re (YieldText t) = ResultText t
+    ye2re (YieldJson j) = ResultJson j
+    ye2re _ = error "unhandled YieldData Type"
 
-    processing s@(Spider taskq _ _ _ resultq rl _ p _) =
-      withChannel2 "processor" resultq (getVar rl) taskq $ \result -> do
-       case result of
-        DataResult t v -> p t v >> return []
-        UrlResult t url -> return $ [RequestTask t url]
-        _ -> error "should not come here"
+isIdle :: Spider -> IO Bool
+isIdle (Spider _ tl _ dl _ rl _ _ _) = do
+  tb <- isTurnedOn "downloader" tl
+  if tb
+    then return False
+    else do
+      db <- isTurnedOn "parser" dl
+      if db
+        then return False
+        else isTurnedOn "processor" rl >>= return.not
 
-readChannel :: Lighter -> Chan a -> IO a
-readChannel lt chan = do
-  turnOff lt
-  r <- readChan chan
-  turnOn lt
-  return r
+waitIdle :: Spider -> Int -> IO ()
+waitIdle s ms = isIdle s >>= \b -> 
+  if b then return () else do
+    threadDelay ms
+    waitIdle s ms
 
-repeatRun :: String -> IO Bool -> IO ()
-repeatRun msg p = startThread msg (repeatDo msg p) >> return ()
+waitEnd :: Spider -> IO ()
+waitEnd spider = repeatDo "wait end"$ do
+  threadDelay $ 1000 * 1000
+  b <- isIdle spider
+  return $ not b
 
-repeatRun2 :: String -> IO Bool -> IO () -> IO ()
-repeatRun2 msg p last = startThread msg $ do
-  repeatDo msg p
-  last
+askClose :: Spider -> IO ()
+askClose s = do
+  writeChan  (_taskQueue s) Nothing
+ 
+waitClosed :: Spider -> IO ()
+waitClosed s =  void $ takeMVar (_endFlag s)
 
-startThread :: String -> IO () -> IO ()
-startThread name p = do
-  tid <- forkIO p
-  putStrLn $ "Start thread " ++ name ++ ", id is " ++ show tid
+mapChannel :: String -> Chan (Maybe a) -> PilotLight  -> Chan (Maybe b) -> (a -> IO [b]) -> IO ()
+mapChannel msg cha pla chb f =
+  repeatDo msg $ bracket
+  (do
+      putStrLn $ msg ++ " waiting next"
+      readChan cha)
+  (\_ -> do
+      --putStrLn $ msg ++ "turn Off"
+      turnOff pla)
+  (\x_ -> do
+      turnOn pla
+      putStrLn $ msg ++ " got one"
+      --putStrLn $ msg ++ " turn On"
+      case x_ of
+        Nothing -> do
+          writeChan chb Nothing
+          return False
+        Just x -> do
+          yx_ <- f x
+          yx <- evaluate yx_
+          mapM_ (writeChan chb . Just)  yx
+          return True)
+
+
+turnOn :: PilotLight -> IO ()
+turnOn t = switch t True
+
+
+turnOff :: PilotLight -> IO ()
+turnOff t = switch t False
+
+isTurnedOn :: String -> PilotLight -> IO Bool
+isTurnedOn msg mv = do
+  b <- takeMVar mv
+  putMVar mv b
+  -- putStrLn $ "check " ++ msg ++ " lighter is" ++ show b
+  return b
+
+switch :: PilotLight -> Bool -> IO ()
+switch mv b = takeMVar mv >> putMVar mv b
 
 repeatDo :: String -> IO Bool -> IO ()
 repeatDo msg f = do
@@ -118,183 +185,3 @@ repeatDo msg f = do
   if not b
     then putStrLn $ msg ++ " closed"
     else repeatDo msg f
-
-waitEnd :: Spider -> IO ()
-waitEnd spider = repeatDo "wait end"$ do
-  b <- isIdle spider
-  if b
-    then return False
-    else do
-      threadDelay 50
-      return True
-  
-askSpiderClose :: Spider -> IO ()
-askSpiderClose s = do
-  writeChan  (_taskQueue s) TaskEnd
-
-runSpider :: StartsUrls -> TmmParser -> TmmProcessor -> IO ()
-runSpider urls tp dp = do
-  taskq  <- newChan
-  dataq  <- newChan
-  resultq <- newChan
-  mapM_ (\(m, u) -> writeChan taskq (RequestTask m u)) urls
-  startDownloader taskq dataq
-  startParser dataq resultq tp
-  startDataProcessor resultq taskq dp False
-
-newLighter :: IO Lighter
-newLighter = do
-  mv <- newMVar False
-  return $ Lighter mv
-
-turnOn :: Lighter -> IO ()
-turnOn t = switchLighter t True
-
-turnOff :: Lighter -> IO ()
-turnOff t = switchLighter t False
-
-isLighterOn :: Lighter -> IO Bool
-isLighterOn (Lighter mv) = do
-  b <- takeMVar mv
-  putMVar mv b
-  return b
- 
-switchLighter :: Lighter -> Bool -> IO ()
-switchLighter (Lighter mv) b = do
-  _  <- takeMVar mv
-  putMVar mv b
-  
-getVar :: Lighter -> (MVar Bool)
-getVar (Lighter v) = v
-
-startDownloader :: TaskQueue -> DataQueue -> IO ()
-startDownloader taskq dataq = do
-  manager <- newManager tlsManagerSettings
-  startThread "downloader" (loop manager)
-  where
-    loop manager = do
-      putStrLn "downloader: wait next task"
-      task <- readChan taskq
-      putStrLn "downloader: got task"
-      case task of
-        TaskEnd -> return ()
-        RequestTask t url -> do
-          txt <- fetchPage manager url
-          writeChan dataq (ResponseText t txt)
-          loop manager
-  
-fetchPage :: Manager -> String -> IO T.Text
-fetchPage manager url = do
-  putStrLn $ "* start download page " ++ url
-  req <- parseRequest url
-  resp <- httpLbs req manager
-  gbk <- ICU.open "gbk" Nothing
-  let txt :: T.Text
-      txt = ICU.toUnicode gbk $ LB.toStrict $ responseBody resp
-  putStrLn $ "* page downloaded "
-  return txt
-
-
-startParser :: DataQueue -> ResultQueue -> TmmParser -> IO ()
-startParser dataq resultq p = do
-  startThread "page parser" loop
-  where
-    loop = do
-      putStrLn "parser: wait next page content"
-      resp <- readChan dataq
-      putStrLn "parser: got content"
-      case resp of
-        ResponseEnd -> return ()
-        ResponseText t txt -> do
-          let rx = p t txt
-          mapM_ (writeChan resultq) rx
-          loop
-          
-startDataProcessor :: ResultQueue -> TaskQueue -> TmmProcessor -> Bool -> IO ()
-startDataProcessor resultq taskq p backend = 
-  if backend
-  then startThread "data processor" loop
-  else loop
-  where
-    loop = do
-      putStrLn "processor: wait result"
-      result <- readChan resultq
-      putStrLn "processor: got result"
-      case result of
-        ResultEnd -> return ()
-        DataResult t v -> do
-          p t v
-          loop
-        UrlResult t url -> do
-          writeChan taskq $ RequestTask t url
-          loop
-  
-
-data FlagChan a = FlagChan (Chan a) (MVar Bool)
-
-withChannel :: String -> Chan a -> MVar Bool  -> (a -> IO b) -> IO b
-withChannel msg ch v f =
-  bracket
-  (do
-      putStrLn $ msg ++ " waiting next"
-      readChan ch)
-  (\_ -> modify v False)
-  (\x -> do 
-      modify v True
-      putStrLn $ msg ++ " got one"
-      y <- f x
-      return y)
-  where
-    modify v b = do
-      _ <- takeMVar v
-      putMVar v b
-
-withChannel2 :: (DataStream a, DataStream b) =>
-                String -> Chan a -> MVar Bool  -> Chan b -> (a -> IO [b]) -> IO ()
-withChannel2 msg cha v chb f =
-  repeatDo msg $ bracket
-  (do
-      putStrLn $ msg ++ " waiting next"
-      readChan cha)
-  (\_ -> modify v False)
-  (\x -> do 
-      modify v True
-      putStrLn $ msg ++ " got one"
-      if isEnd x
-        then do
-          writeChan chb endGuard
-          return False
-        else do
-          yx <- f x
-          mapM_ (writeChan chb) yx
-          return True)
-  where
-    modify v b = do
-      _ <- takeMVar v
-      putMVar v b
-
--- linkChannel :: String -> Chan (Maybe a) -> MVar Bool  -> Chan (Maybe b) -> (a -> IO [b]) -> IO ()
--- linkChannel msg cha v chb f =
---   repeatDo msg $ bracket
---   (do
---       putStrLn $ msg ++ " waiting next"
---       readChan cha)
---   (\_ -> modify v False)
---   (\x_ -> do 
---       modify v True
---       putStrLn $ msg ++ " got one"
---       case x_ of
---         Nothing -> do
---           writeChan chb Nothing
---           return False
---         Just x -> do
---           yx <- f x
---           mapM_ (writeChan chb) yx
---           return True)
---   where
---     modify v b = do
---       _ <- takeMVar v
---       putMVar v b
-    
-                     
-    

@@ -23,7 +23,7 @@ import Data.Vector(Vector, (!))
 import System.Random
 import System.Log.FastLogger
 
-data ResponseData = TextData String T.Text T.Text | BinaryData String T.Text B8.ByteString | NoData
+data ResponseData = ResponseData String T.Text (Either T.Text B8.ByteString)| NoData
 type Downloader = String -> IO ResponseData
 
 data RoutingContext = RoutingContext{ _manager :: Manager
@@ -52,12 +52,12 @@ download (RoutingContext manager agents loggerSet) url = do
   let bytes = responseBody response
   case parseContentType $ lookup hContentType headers of
     (False, Just ctype, _) -> do
-      return $ BinaryData url ctype bytes
+      return $ ResponseData url ctype (Right bytes)
       
     (True, Just ctype, charset_) -> do
       let charset = maybe "utf-8" id charset_
       txt <- unicoding charset bytes
-      return $ TextData url ctype txt
+      return $ ResponseData url ctype (Left txt)
   where
     {-# INLINE addHeaders #-}
     addHeaders req = do

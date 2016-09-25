@@ -10,21 +10,25 @@ data Selector a = Fun (a -> Selector a) | OK | No
 type Pred a b = b -> a -> Bool
 type Accept a = a -> Bool
 
-data TagCondition = Ename T.Text | Cname T.Text deriving (Show)
+data TagCondition = Ename T.Text | Cname T.Text |EId T.Text deriving (Show)
 
 tagMatch :: TagCondition -> Tag T.Text -> Bool
 tagMatch (Ename ns) (TagOpen ts _ ) = ns == ts
-tagMatch (Ename _ ) _ = False
+tagMatch (EId    ids) (TagOpen _ attrs) = case lookup "id"  attrs of
+                                          Nothing -> False
+                                          Just s -> s == ids
 tagMatch (Cname cs) (TagOpen _ attrs) = case lookup "class" attrs of
                                           Nothing -> False
                                           Just s -> elem cs (T.words s)
+tagMatch _ _ = False
 
 strToCond :: T.Text -> [TagCondition]
 strToCond s = map f $ T.words s
   where
-    f st = if '.' == (T.head st)
-           then Cname $ T.tail st
-           else Ename st
+    f st = case (T.head st) of
+      '.' -> Cname $ T.tail st
+      '#' -> EId $ T.tail st
+      _ -> Ename st
 
 select :: T.Text -> [Tag T.Text] -> [[Tag T.Text]]
 select str tags = _select (strToCond str) isTagOpen isTagClose tagMatch tags
