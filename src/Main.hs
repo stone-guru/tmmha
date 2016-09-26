@@ -58,7 +58,7 @@ mmProcessor (ResultData _ meta (ResultBinary img)) = do
             
 detailInfoParser :: OriginData -> IO [YieldData]
 detailInfoParser od = trace "detail page parser" $
-  return $ [pick (select1 ".mm-p-base-info ul" tags)]
+  return $ css1 ".mm-p-base-info ul" pick tags
   where
     tags = parseTags $ originText od
     m2f fn = fn .= (metaOf od) ! fn
@@ -81,7 +81,8 @@ photoPageParser od = trace "photoPageParser run" $ do
     return [yieldUrl "image"  (metaOf od) ("https:" ++ T.unpack url)]
   where
     tags = parseTags $ originText od
-    images = fromAttrib "value" $ head $ select1 "#J_MmPicListId" tags
+    pick e = fromAttrib "value" $ head e
+    images:_ =  css1 "#J_MmPicListId" pick tags
     
 listPageParser :: OriginData -> IO [YieldData]
 listPageParser  od = trace "listPageParser run" $ return $ 
