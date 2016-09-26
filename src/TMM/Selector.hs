@@ -24,12 +24,12 @@ type Pred a = a -> Bool
 data TagCondition = Ename T.Text | Cname T.Text |EId T.Text deriving (Show)
 
 tagMatch :: Tag T.Text -> TagCondition -> Bool
-tagMatch (TagOpen ts _ )   (Ename ns)  = trace "#tagOpen-name" $ ns == ts
-tagMatch (TagOpen _ attrs) (EId ids)  =  trace "#tagOpen-id" $
+tagMatch (TagOpen ts _ )   (Ename ns)  =  ns == ts -- trace "#tagOpen-name" $
+tagMatch (TagOpen _ attrs) (EId ids)  =  -- trace "#tagOpen-id" $
                                          case lookup "id"  attrs of
                                            Nothing -> False
                                            Just s -> s == ids
-tagMatch (TagOpen _ attrs) (Cname cs)  = trace "#tagOpen-class" $
+tagMatch (TagOpen _ attrs) (Cname cs)  = -- trace "#tagOpen-class" $
                                           case lookup "class" attrs of
                                             Nothing -> False
                                             Just s -> elem cs (T.words s)
@@ -67,7 +67,7 @@ _selectb (Comporator isOpen isClose p) bx single f ax = loop [] ax
 
     search _ [] = Nothing
     search !stack !rest@(a:ax)
-      | isOpen a = if trace "#match " $ match p (a:stack) bxv
+      | isOpen a = if match p (a:stack) bxv -- trace "#match " $ 
                    then Just (stack, rest)
                    else search (a:stack) ax
       | isClose a = case stack of

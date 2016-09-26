@@ -22,14 +22,14 @@ import System.Random
 import System.Log.FastLogger
 
 data ResponseData = ResponseData String T.Text (Either T.Text B8.ByteString)| NoData
-type Downloader = String -> IO ResponseData
+type Downloader = String -> IO (Response B8.ByteString)
 
 data RoutingContext = RoutingContext{ _manager :: Manager
                                     , _mockAgents :: Vector B.ByteString
                                     , _loggerSet :: LoggerSet
                                     }
 
-newDownloader :: [String] -> IO (String -> IO ResponseData)
+newDownloader :: [String] -> IO Downloader
 newDownloader agents = do
   context <- RoutingContext <$> newManager tlsManagerSettings
                             <*> return (V.fromList $ map s2b ax)
@@ -41,21 +41,11 @@ newDownloader agents = do
     defaultAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:49.0) Gecko/20100101 Firefox/49.0"
 
 
-download :: RoutingContext -> String -> IO ResponseData
+download :: RoutingContext -> String -> IO (Response B8.ByteString)
 download (RoutingContext manager agents loggerSet) url = do
   req <- parseRequest url >>= addHeaders
   response <- httpLbs req manager
-
-  let headers = responseHeaders  response
-  let bytes = responseBody response
-  case parseContentType $ lookup hContentType headers of
-    (False, Just ctype, _) -> do
-      return $ ResponseData url ctype (Right bytes)
-      
-    (True, Just ctype, charset_) -> do
-      let charset = maybe "utf-8" id charset_
-      txt <- unicoding charset bytes
-      return $ ResponseData url ctype (Left txt)
+  return response
   where
     {-# INLINE addHeaders #-}
     addHeaders req = do
@@ -68,27 +58,9 @@ download (RoutingContext manager agents loggerSet) url = do
                        ,(hCacheControl, "max-age=0")
                        ,("Upgrade-Insecure-Requests", "1")]}
 
-parseContentType :: Maybe B.ByteString -> (Bool, Maybe T.Text, Maybe String)
-parseContentType Nothing =
-  (False, Just "application/octet-stream", Nothing)
-parseContentType (Just ct) =
-  let isText = (B.isPrefixOf "text/" ct) || (B.isPrefixOf "application/js" ct)
-      contentType = fst $ B.breakSubstring ";" ct
-      charset = let rest = snd (B.breakSubstring "=" ct)
-                in if B.null rest then Nothing else Just $ b2s (B.tail rest)
-  in (isText, Just (E.decodeUtf8 contentType), charset)
-
-b2s :: B.ByteString -> String
-b2s = map (toEnum . fromIntegral) . B.unpack
-
 s2b :: String -> B.ByteString
 s2b s = B.pack $ map (fromIntegral . fromEnum) s
 
-unicoding :: String -> B8.ByteString -> IO T.Text
-unicoding charset bytes = do
-  locale <- ICU.open charset Nothing
-  let txt = ICU.toUnicode locale $ B8.toStrict bytes
-  return txt
 
 randChoose :: Vector a -> IO a  
 randChoose v = do

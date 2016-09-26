@@ -26,6 +26,12 @@ import qualified Data.List as L
 import Control.Exception
 import qualified Data.HashMap.Strict as M
 import Control.DeepSeq
+import qualified Data.Text.Encoding as E
+import qualified Data.Text.ICU.Convert as ICU  -- text-icu
+import qualified Data.ByteString.Lazy.Char8 as B8
+import qualified Data.ByteString as B
+import Network.HTTP.Client
+import Network.HTTP.Types.Header
 
 class Octopus a where
   newInstance :: ShParser -> ShProcessor -> IO a
@@ -81,17 +87,41 @@ downloadRoute s dl rn = mapChannel rn
                          (_taskQueue s) (_taskLight s) (_dataQueue s) download
   where
     download (TaskData t meta url) = do
-      d <- dl url
-      case d of
-        DL.ResponseData url ctype ctx ->
-          return $! [OriginData t  ctype (fillUrl url meta) (ctx2Origin ctx)]
-        DL.NoData -> do
-          putStrLn $ "error got page " ++ url
-          return []
+      response <- dl url
+      let headers = responseHeaders  response
+      let bytes = responseBody response
+      
+      case parseContentType $ lookup hContentType headers of
+        (False, Just ctype, _) -> do
+          return [OriginData t  ctype (fillUrl url meta) (OriginBinary bytes)]
+      
+        (True, Just ctype, charset_) -> do
+          let charset = maybe "utf-8" id charset_
+          txt <- unicoding charset bytes
+          return $ [OriginData t  ctype (fillUrl url meta) (OriginText txt)]
+
     fillUrl url meta = M.insert "url" (T.pack url) meta
     ctx2Origin (Left text) = OriginText text
     ctx2Origin (Right bin) = OriginBinary bin
 
+b2s :: B.ByteString -> String
+b2s = map (toEnum . fromIntegral) . B.unpack
+
+parseContentType :: Maybe B.ByteString -> (Bool, Maybe T.Text, Maybe String)
+parseContentType Nothing =
+  (False, Just "application/octet-stream", Nothing)
+parseContentType (Just ct) =
+  let isText = (B.isPrefixOf "text/" ct) || (B.isPrefixOf "application/js" ct)
+      contentType = fst $ B.breakSubstring ";" ct
+      charset = let rest = snd (B.breakSubstring "=" ct)
+                in if B.null rest then Nothing else Just $ b2s (B.tail rest)
+  in (isText, Just (E.decodeUtf8 contentType), charset)
+
+unicoding :: String -> B8.ByteString -> IO T.Text
+unicoding charset bytes = do
+  locale <- ICU.open charset Nothing
+  let txt = ICU.toUnicode locale $ B8.toStrict bytes
+  return txt
 
 parseRoute :: Spider -> IO ()
 parseRoute s = mapChannel "parser"
