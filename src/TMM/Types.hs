@@ -14,8 +14,6 @@ type Meta = HashMap Text Text
 data OriginEnt = OriginBinary !ByteString
                | OriginText !Text
                
--- instance NFData OriginEnt where
-  
 data YieldEnt = YieldBinary !ByteString
                | YieldText  !Text
                | YieldJson !Value
@@ -72,11 +70,6 @@ yieldUrl t meta url = YieldData t meta (YieldUrl url)
 -- metaLookup:: Octopus a => a -> Text -> Maybe Text
 -- metaLookup a k = lookup k (metaOf a)
 
--- 
-type TaskQueue = Chan (Maybe TaskData)
-type DataQueue = Chan (Maybe OriginData)
-type ResultQueue = Chan (Maybe YieldData)
-
 --
 instance ExchangeData OriginData  where
   typeOf (OriginData t _ _ _) = t
@@ -90,3 +83,32 @@ instance ExchangeData ResultData  where
   typeOf (ResultData t _ _) = t
   metaOf (ResultData _ m _) = m
 
+instance NFData OriginEnt where
+  rnf (OriginBinary b) = rnf b
+  rnf (OriginText t) = rnf t
+
+instance NFData YieldEnt where
+  rnf (YieldBinary b) = rnf b
+  rnf (YieldText t) = rnf t
+  rnf (YieldJson v) = rnf v
+  rnf (YieldUrl url) = rnf url
+  
+instance NFData ResultEnt where
+  rnf (ResultBinary b) = rnf b
+  rnf (ResultText t) = rnf t
+  rnf (ResultJson v) = rnf v
+
+  
+instance NFData TaskData where
+  rnf (TaskData t m url) = rnf t `seq` rnf m `seq` rnf url
+
+instance NFData OriginData where
+  rnf (OriginData t ct m e) = rnf t `seq` rnf ct `seq` rnf m `seq` rnf e
+
+instance NFData YieldData where
+  rnf (YieldData t m e) =  rnf t `seq` rnf m `seq` rnf e
+
+instance NFData ResultData where
+  rnf (ResultData t m e) = rnf t `seq` rnf m `seq` rnf e
+
+  
