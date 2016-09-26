@@ -16,7 +16,10 @@ import TMM.Types
 import qualified TMM.Downloader as DL
 import Control.Monad  
 import Control.Concurrent
-import Control.Concurrent.Chan
+import Control.Concurrent.STM
+import Control.Concurrent.STM.TChan
+import Control.Concurrent.STM.TVar
+import Control.Concurrent.MVar
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.List as L
@@ -29,7 +32,13 @@ class Octopus a where
   isInstIdle :: a -> IO Bool
   waitIntClosed :: a -> IO ()
 
-type PilotLight = MVar Bool
+-- 
+type TaskQueue = TChan (Maybe TaskData)
+type DataQueue = TChan (Maybe OriginData)
+type ResultQueue = TChan (Maybe YieldData)
+
+
+type PilotLight = TVar Bool
 
 data Spider = Spider { _taskQueue :: TaskQueue
                      , _taskLight :: PilotLight
@@ -39,19 +48,20 @@ data Spider = Spider { _taskQueue :: TaskQueue
                      , _resultLight :: PilotLight
                      , _parser :: ShParser
                      , _processor :: ShProcessor
-                     , _endFlag :: MVar Bool
+                     , _workingFlag :: MVar Bool
                      }
 
 newSpider :: ShParser -> ShProcessor -> IO Spider
 newSpider prs prc = do
-  taskq <- newChan
-  dataq <- newChan
-  resultq <- newChan
-  tpl <- newMVar False
-  dpl <- newMVar False
-  rpl <- newMVar False
   ef <- newEmptyMVar
-  return $ Spider taskq tpl dataq dpl resultq rpl prs prc ef
+  atomically $ do
+    taskq <- newTChan
+    dataq <- newTChan
+    resultq <- newTChan
+    tpl <- newTVar False
+    dpl <- newTVar False
+    rpl <- newTVar False
+    return $ Spider taskq tpl dataq dpl resultq rpl prs prc ef
 
 startSpider :: Spider -> StartsUrls -> IO ()
 startSpider spider urls = do
@@ -59,10 +69,12 @@ startSpider spider urls = do
   forkIO (downloadRoute spider fdownload "downloader1")
   -- forkIO (downloadRoute spider fdownload "downloader2")
   forkIO (parseRoute spider)
-  forkIO (processRoute spider >> putMVar (_endFlag spider) True)
-  mapM_  feedStartsUrl urls
+  forkIO (processRoute spider >> putMVar (_workingFlag spider) False)
+  atomically $ mapM_  feedStartsUrl urls
+  putMVar (_workingFlag spider) True
   where
-    feedStartsUrl (t, url) = writeChan (_taskQueue spider) $ Just $ TaskData t M.empty url
+    feedStartsUrl (t, url) = writeTChan (_taskQueue spider) $
+                                        Just $ TaskData t M.empty url
 
 downloadRoute :: Spider -> DL.Downloader -> String -> IO ()
 downloadRoute s dl rn = mapChannel rn
@@ -126,24 +138,26 @@ waitIdle s ms = isIdle s >>= \b ->
     waitIdle s ms
 
 waitEnd :: Spider -> IO ()
-waitEnd spider = repeatDo "wait end"$ do
-  threadDelay $ 1000 * 1000
-  b <- isIdle spider
-  return $ not b
+waitEnd spider = do
+  readMVar (_workingFlag spider) --assure spider is working
+  repeatDo "wait end"$ do
+    threadDelay $ 1000 * 100
+    b <- isIdle spider
+    return $ not b
 
 askClose :: Spider -> IO ()
-askClose s = do
-  writeChan  (_taskQueue s) Nothing
+askClose s = atomically $ writeTChan  (_taskQueue s) Nothing
  
 waitClosed :: Spider -> IO ()
-waitClosed s =  void $ takeMVar (_endFlag s)
+waitClosed s =  void $ takeMVar (_workingFlag s)
 
-mapChannel :: String -> Chan (Maybe a) -> PilotLight  -> Chan (Maybe b) -> (a -> IO [b]) -> IO ()
+mapChannel :: (NFData a, NFData b) =>  String -> TChan (Maybe a) -> PilotLight  ->
+              TChan (Maybe b) -> (a -> IO [b]) -> IO ()
 mapChannel msg cha pla chb f =
   repeatDo msg $ bracket
   (do
       putStrLn $ msg ++ " waiting next"
-      readChan cha)
+      atomically $ readTChan cha)
   (\_ -> do
       --putStrLn $ msg ++ "turn Off"
       turnOff pla)
@@ -153,14 +167,13 @@ mapChannel msg cha pla chb f =
       --putStrLn $ msg ++ " turn On"
       case x_ of
         Nothing -> do
-          writeChan chb Nothing
+          atomically $ writeTChan chb Nothing
           return False
         Just x -> do
           yx_ <- f x
-          yx <- evaluate yx_
-          mapM_ (writeChan chb . Just)  yx
+          yx <- evaluate $ force yx_
+          atomically $ mapM_ (writeTChan chb . Just)  yx
           return True)
-
 
 turnOn :: PilotLight -> IO ()
 turnOn t = switch t True
@@ -170,14 +183,14 @@ turnOff :: PilotLight -> IO ()
 turnOff t = switch t False
 
 isTurnedOn :: String -> PilotLight -> IO Bool
-isTurnedOn msg mv = do
-  b <- takeMVar mv
-  putMVar mv b
+isTurnedOn msg mv = readTVarIO mv
+--  b <- takeMVar mv
+--  putMVar mv b
   -- putStrLn $ "check " ++ msg ++ " lighter is" ++ show b
-  return b
+--  return b
 
 switch :: PilotLight -> Bool -> IO ()
-switch mv b = takeMVar mv >> putMVar mv b
+switch mv b = atomically $ writeTVar mv b
 
 repeatDo :: String -> IO Bool -> IO ()
 repeatDo msg f = do
