@@ -12,10 +12,8 @@ import Network.HTTP.Client.TLS
 import Network.HTTP.Types.Header
 import Control.Exception
 import qualified Data.Text as T
--- import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as E
 import qualified Data.Text.ICU.Convert as ICU  -- text-icu
--- import qualified Data.Text.ICU as ICU
 import qualified Data.ByteString.Lazy.Char8 as B8
 import qualified Data.ByteString as B
 import qualified Data.Vector as V
@@ -47,7 +45,7 @@ download :: RoutingContext -> String -> IO ResponseData
 download (RoutingContext manager agents loggerSet) url = do
   req <- parseRequest url >>= addHeaders
   response <- httpLbs req manager
-  
+
   let headers = responseHeaders  response
   let bytes = responseBody response
   case parseContentType $ lookup hContentType headers of
