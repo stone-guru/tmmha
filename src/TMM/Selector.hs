@@ -39,9 +39,10 @@ strToCond :: T.Text -> [TagCondition]
 strToCond s = map f $ T.words s
   where
     f st = case (T.head st) of
-      '.' -> Cname $ T.tail st
-      '#' -> EId $ T.tail st
+      '.' -> tl `seq` Cname tl
+      '#' -> tl `seq` EId tl
       _ -> Ename st
+      where tl = T.tail st
 
 data Comporator a b = Comporator (Pred a) (Pred a) (Matcher a b)
 type Picker a = [Tag T.Text] -> a

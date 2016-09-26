@@ -100,9 +100,8 @@ downloadRoute s dl rn = mapChannel rn
           txt <- unicoding charset bytes
           return $ [OriginData t  ctype (fillUrl url meta) (OriginText txt)]
 
-    fillUrl url meta = M.insert "url" (T.pack url) meta
-    ctx2Origin (Left text) = OriginText text
-    ctx2Origin (Right bin) = OriginBinary bin
+    fillUrl url meta = let s = T.pack url
+                       in s `seq` M.insert "url" s  meta
 
 b2s :: B.ByteString -> String
 b2s = map (toEnum . fromIntegral) . B.unpack
@@ -112,16 +111,18 @@ parseContentType Nothing =
   (False, Just "application/octet-stream", Nothing)
 parseContentType (Just ct) =
   let isText = (B.isPrefixOf "text/" ct) || (B.isPrefixOf "application/js" ct)
-      contentType = fst $ B.breakSubstring ";" ct
+      contentType = E.decodeUtf8 $! fst $! B.breakSubstring ";" ct
       charset = let rest = snd (B.breakSubstring "=" ct)
-                in if B.null rest then Nothing else Just $ b2s (B.tail rest)
-  in (isText, Just (E.decodeUtf8 contentType), charset)
+                in if B.null rest then Nothing
+                   else let cs = b2s (B.tail rest)
+                        in cs `seq` Just cs
+  in isText `seq` contentType `seq` charset `seq` (isText, Just contentType, charset)
 
 unicoding :: String -> B8.ByteString -> IO T.Text
 unicoding charset bytes = do
   locale <- ICU.open charset Nothing
   let txt = ICU.toUnicode locale $ B8.toStrict bytes
-  return txt
+  return $! txt
 
 parseRoute :: Spider -> IO ()
 parseRoute s = mapChannel "parser"
