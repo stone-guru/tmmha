@@ -32,26 +32,30 @@ import qualified Data.ByteString.Lazy.Char8 as B8
 import qualified Data.ByteString as B
 import Network.HTTP.Client
 import Network.HTTP.Types.Header
-
+import Data.Maybe
+  
 class Octopus a where
   newInstance :: ShParser -> ShProcessor -> IO a
   isInstIdle :: a -> IO Bool
   waitIntClosed :: a -> IO ()
 
--- 
+--
+type ShResponse = Response B8.ByteString
+data ResponseData = ResponseData TaskData ShResponse
+  
+instance NFData ResponseData where
+  rnf (ResponseData t resp) = rnf t 
+
 type TaskQueue = TChan (Maybe TaskData)
-type DataQueue = TChan (Maybe OriginData)
-type ResultQueue = TChan (Maybe YieldData)
+type ResponseQueue = TChan (Maybe ResponseData)
 
 
 type PilotLight = TVar Bool
 
 data Spider = Spider { _taskQueue :: TaskQueue
                      , _taskLight :: PilotLight
-                     , _dataQueue :: DataQueue
-                     , _dataLight :: PilotLight
-                     , _resultQueue :: ResultQueue
-                     , _resultLight :: PilotLight
+                     , _respQueue :: ResponseQueue
+                     , _respLight :: PilotLight
                      , _parser :: ShParser
                      , _processor :: ShProcessor
                      , _workingFlag :: MVar Bool
@@ -62,19 +66,16 @@ newSpider prs prc = do
   ef <- newEmptyMVar
   atomically $ do
     taskq <- newTChan
-    dataq <- newTChan
-    resultq <- newTChan
+    respq <- newTChan
     tpl <- newTVar False
-    dpl <- newTVar False
     rpl <- newTVar False
-    return $ Spider taskq tpl dataq dpl resultq rpl prs prc ef
+    return $ Spider taskq tpl respq rpl prs prc ef
 
 startSpider :: Spider -> StartsUrls -> IO ()
 startSpider spider urls = do
   fdownload <- DL.newDownloader []
   forkIO (downloadRoute spider fdownload "downloader1")
-  -- forkIO (downloadRoute spider fdownload "downloader2")
-  forkIO (parseRoute spider)
+  --forkIO (downloadRoute spider fdownload "downloader2")
   forkIO (processRoute spider >> putMVar (_workingFlag spider) False)
   atomically $ mapM_  feedStartsUrl urls
   putMVar (_workingFlag spider) True
@@ -84,62 +85,65 @@ startSpider spider urls = do
 
 downloadRoute :: Spider -> DL.Downloader -> String -> IO ()
 downloadRoute s dl rn = mapChannel rn
-                         (_taskQueue s) (_taskLight s) (_dataQueue s) download
+                         (_taskQueue s) (_taskLight s) (_respQueue s) download
   where
-    download (TaskData t meta url) = do
+    download task@(TaskData t meta url) = do
       response <- dl url
-      let headers = responseHeaders  response
-      let bytes = responseBody response
-      
-      case parseContentType $ lookup hContentType headers of
-        (False, Just ctype, _) -> do
-          return [OriginData t  ctype (fillUrl url meta) (OriginBinary bytes)]
-      
-        (True, Just ctype, charset_) -> do
-          let charset = maybe "utf-8" id charset_
-          txt <- unicoding charset bytes
-          return $ [OriginData t  ctype (fillUrl url meta) (OriginText txt)]
+      return [ResponseData task response]
+
+analysisResp :: TaskData -> ShResponse -> IO OriginData  
+analysisResp (TaskData t meta url) response = do
+  let headers = responseHeaders  response
+  let bytes = responseBody response
+  
+  case parseContentType $ lookup hContentType headers of
+    (False, Just ctype, _) -> 
+       return $! OriginData t  ctype (fillUrl url meta) (OriginBinary bytes)
+  
+    (True, Just ctype, charset_) -> do
+      let charset = maybe "utf-8" id charset_
+      txt <- unicoding charset bytes
+      return $ OriginData t  ctype (fillUrl url meta) (OriginText txt)
+  where
+    b2s :: B.ByteString -> String
+    b2s = map (toEnum . fromIntegral) . B.unpack
 
     fillUrl url meta = let s = T.pack url
                        in s `seq` M.insert "url" s  meta
 
-b2s :: B.ByteString -> String
-b2s = map (toEnum . fromIntegral) . B.unpack
+    parseContentType :: Maybe B.ByteString -> (Bool, Maybe T.Text, Maybe String)
+    parseContentType Nothing = (False, Just "application/octet-stream", Nothing)
+    parseContentType (Just ct) =
+      let isText = (B.isPrefixOf "text/" ct) || (B.isPrefixOf "application/js" ct)
+          contentType = E.decodeUtf8 $! fst $! B.breakSubstring ";" ct
+          charset = let rest = snd (B.breakSubstring "=" ct)
+                    in if B.null rest then Nothing
+                       else let cs = b2s (B.tail rest) in cs `seq` Just cs
+      in isText `seq` contentType `seq` charset `seq` (isText, Just contentType, charset)
 
-parseContentType :: Maybe B.ByteString -> (Bool, Maybe T.Text, Maybe String)
-parseContentType Nothing =
-  (False, Just "application/octet-stream", Nothing)
-parseContentType (Just ct) =
-  let isText = (B.isPrefixOf "text/" ct) || (B.isPrefixOf "application/js" ct)
-      contentType = E.decodeUtf8 $! fst $! B.breakSubstring ";" ct
-      charset = let rest = snd (B.breakSubstring "=" ct)
-                in if B.null rest then Nothing
-                   else let cs = b2s (B.tail rest)
-                        in cs `seq` Just cs
-  in isText `seq` contentType `seq` charset `seq` (isText, Just contentType, charset)
-
-unicoding :: String -> B8.ByteString -> IO T.Text
-unicoding charset bytes = do
-  locale <- ICU.open charset Nothing
-  let txt = ICU.toUnicode locale $ B8.toStrict bytes
-  return $! txt
-
-parseRoute :: Spider -> IO ()
-parseRoute s = mapChannel "parser"
-                 (_dataQueue s) (_dataLight s) (_resultQueue s)
-                 (\x -> do
-                     y <- _parser s x
-                     return $! y)
+    unicoding :: String -> B8.ByteString -> IO T.Text
+    unicoding charset bytes = do
+      locale <- ICU.open charset Nothing
+      let txt = ICU.toUnicode locale $ B8.toStrict bytes
+      return $! txt
 
 processRoute :: Spider -> IO ()
 processRoute s = mapChannel "process"
-                    (_resultQueue s) (_resultLight s) (_taskQueue s) process
+                    (_respQueue s) (_respLight s) (_taskQueue s) process
   where
-    process yd = if isUrl yd then return [toTask yd] else
+    process (ResponseData t resp) = {-# SCC "processRoute" #-}do
+      od <- analysisResp t resp
+      ydx <- _parser s od
+      lst <- mapM dispatch ydx
+      return $ catMaybes lst
+      
+    --dispatch :: OriginData -> IO [YieldData]
+    dispatch yd = if isUrl yd then return.Just $ toTask yd else
       do
         _processor s (yd2rd yd)
-        return []
+        return Nothing
   
+      
     isUrl (YieldData _ _ (YieldUrl _)) = True
     isUrl _ = False
   
@@ -152,15 +156,11 @@ processRoute s = mapChannel "process"
     ye2re _ = error "unhandled YieldData Type"
 
 isIdle :: Spider -> IO Bool
-isIdle (Spider _ tl _ dl _ rl _ _ _) = do
+isIdle (Spider _ tl _  rl _ _ _) = do
   tb <- isTurnedOn "downloader" tl
   if tb
     then return False
-    else do
-      db <- isTurnedOn "parser" dl
-      if db
-        then return False
-        else isTurnedOn "processor" rl >>= return.not
+    else isTurnedOn "processor" rl >>= return.not
 
 waitIdle :: Spider -> Int -> IO ()
 waitIdle s ms = isIdle s >>= \b -> 
@@ -172,12 +172,12 @@ waitEnd :: Spider -> IO ()
 waitEnd spider = do
   readMVar (_workingFlag spider) --assure spider is working
   repeatDo "wait end"$ do
-    threadDelay $ 1000 * 100
+    threadDelay $ 1000 * 1000
     b <- isIdle spider
     return $ not b
 
 askClose :: Spider -> IO ()
-askClose s = atomically $ writeTChan  (_taskQueue s) Nothing
+askClose s = atomically $ void $ forM_  (replicate 24  Nothing) (writeTChan (_taskQueue s))
  
 waitClosed :: Spider -> IO ()
 waitClosed s =  void $ takeMVar (_workingFlag s)
@@ -187,14 +187,14 @@ mapChannel :: (NFData a, NFData b) =>  String -> TChan (Maybe a) -> PilotLight  
 mapChannel msg cha pla chb f =
   repeatDo msg $ bracket
   (do
-      putStrLn $ msg ++ " waiting next"
+      --putStrLn $ msg ++ " waiting next"
       atomically $ readTChan cha)
   (\_ -> do
       --putStrLn $ msg ++ "turn Off"
       turnOff pla)
   (\x_ -> do
       turnOn pla
-      putStrLn $ msg ++ " got one"
+      --putStrLn $ msg ++ " got one"
       --putStrLn $ msg ++ " turn On"
       case x_ of
         Nothing -> do
@@ -208,7 +208,6 @@ mapChannel msg cha pla chb f =
 
 turnOn :: PilotLight -> IO ()
 turnOn t = switch t True
-
 
 turnOff :: PilotLight -> IO ()
 turnOff t = switch t False
