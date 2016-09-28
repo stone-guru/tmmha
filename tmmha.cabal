@@ -48,5 +48,6 @@ executable tmmha
                 vector
   hs-source-dirs:      src
   default-language:    Haskell2010
-  ghc-options: -O2 -rtsopts -threaded
--- -prof -auto-all -caf-all 
+  ghc-options: -O2 -rtsopts -threaded 
+  -- -prof -auto-all -caf-all  -eventlog -fforce-recomp
+  
