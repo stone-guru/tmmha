@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 import TMM.Types
 import TMM.Selector
-import TMM.Workers2
+import TMM.Workers
 import TMM.Downloader
 
 import qualified Data.Text as T
@@ -118,12 +118,12 @@ listPageParser  od = trace "listPageParser run" $ return $ concat result
     pick1 :: [Tag T.Text] -> (T.Text, T.Text, T.Text)
     pick1 top = let name = extract ".top .lady-name" top
                     age = extract ".top em strong" top
-                    uid = head $ css1  ".top .friend-follow"  ((fromAttrib "data-userid").head) top
+                    uid:_ = css1  ".top .friend-follow"  ((fromAttrib "data-userid").head) top
                 in (uid, name, age)
   
     pick :: [Tag T.Text] -> [YieldData]
-    pick tx = let (uid, name, age) = head $ css1 ".top" pick1 tx
-                  url = fromAttrib "href" $ head $ select1 ".personal-info .w610 a" tx
+    pick tx = let (uid, name, age):_ = css1 ".top" pick1 tx
+                  url:_ =  css1 ".personal-info .w610 a" ((fromAttrib "href").head) tx
                   meta = M.fromList [ ("uid", uid), ("name", name), ("age", age), ("photoUrl", url)]
               in  [yieldUrl "detail" meta (gotDetailUrl uid),
                    yieldUrl "photo"  meta ("https:" ++ T.unpack url)]
