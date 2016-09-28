@@ -4,7 +4,7 @@
 {-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 import TMM.Types
 import TMM.Selector
-import TMM.Workers
+import TMM.Workers2
 import TMM.Downloader
 
 import qualified Data.Text as T
@@ -14,6 +14,7 @@ import qualified Data.ByteString.Lazy.Char8 as B
 import Text.HTML.TagSoup
 import qualified Data.Text.ICU.Convert as ICU  -- text-icu
 import qualified Data.Text.ICU as ICU
+import qualified Data.Text.ICU.Regex as R
 import qualified Data.List as L
 import Text.StringLike
 import Data.Maybe
@@ -75,26 +76,53 @@ detailInfoParser od = trace "detail page parser" $
 
 photoPageParser :: OriginData -> IO [YieldData]
 photoPageParser od = trace "photoPageParser run" $ do
-    let (_, s1) = T.breakOn "//" images
-    let (url, _) = T.breakOn "\"" s1
-    T.putStrLn url
-    return [yieldUrl "image"  (metaOf od) ("https:" ++ T.unpack url)]
-  where
-    tags = parseTags $ originText od
-    pick e = fromAttrib "value" $ head e
-    images:_ =  css1 "#J_MmPicListId" pick tags
+  --putStrLn $ show $ originText od
+  url <- fmap head $ searchImageUrl 1 (originText od) 
+  return [yieldUrl "image"  (metaOf od) ("https:" ++ T.unpack url)]
+
+searchImageUrl :: Int -> T.Text -> IO [T.Text]
+searchImageUrl n ctx = do
+  re <- R.regex [] "bigUrl&quot;:&quot;([^&]*)"
+  R.setText re ctx
+  T.putStrLn $ R.pattern re
+  b <- R.find re 0
+  loop b n ctx re [] 
+  where 
+    loop False _ _ _ sx = return sx
+    loop _ 0 _ _ sx = return sx
+    loop True i s re sx = do
+      start <- R.start_ re 1
+      end <-   R.end_ re 1
+      --putStrLn $ "found one" ++ show start ++ ", " ++ show end
+      if start > -1
+        then  do
+          let ss = sub s (fromEnum start) (fromEnum end)
+          --T.putStrLn $ ss
+          b <- R.findNext re
+          loop b (i - 1) s re (ss:sx)
+        else do
+          b <- R.findNext re
+          loop b (i - 1) s re sx
+    sub s start end = let s1 = T.take end s
+                          s2 = T.drop start s1
+                      in s1 `seq` s2
     
 listPageParser :: OriginData -> IO [YieldData]
-listPageParser  od = trace "listPageParser run" $ return $ 
-                     concatMap pick (select ".personal-info" tags)
+listPageParser  od = trace "listPageParser run" $ return $ concat result
   where
     tags = parseTags $ originText od
-    pick1 tx = let top = select1 ".top" tx
-                   name = extract ".top .lady-name" top
-                   age = extract ".top em strong" top
-                   uid = fromAttrib "data-userid" $ head $ select1 ".top .friend-follow" top
-               in (uid, name, age)
-    pick tx = let (uid, name, age) = pick1 tx
+
+    result :: [[YieldData]]
+    result = css ".personal-info" pick tags
+    
+    pick1 :: [Tag T.Text] -> (T.Text, T.Text, T.Text)
+    pick1 top = let name = extract ".top .lady-name" top
+                    age = extract ".top em strong" top
+                    uid = head $ css1  ".top .friend-follow"  ((fromAttrib "data-userid").head) top
+                in (uid, name, age)
+  
+    pick :: [Tag T.Text] -> [YieldData]
+    pick tx = let (uid, name, age) = head $ css1 ".top" pick1 tx
                   url = fromAttrib "href" $ head $ select1 ".personal-info .w610 a" tx
                   meta = M.fromList [ ("uid", uid), ("name", name), ("age", age), ("photoUrl", url)]
               in  [yieldUrl "detail" meta (gotDetailUrl uid),
