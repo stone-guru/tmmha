@@ -9,7 +9,6 @@ where
 import qualified Data.Text as T
 import Data.Text(Text)
 import Text.HTML.TagSoup
-import Debug.Trace
 import Control.Exception
 import Data.Maybe
 import Debug.Trace
@@ -28,13 +27,13 @@ tagMatch (TagOpen _ attrs) (EId ids)  =  -- trace "#tagOpen-id" $
 tagMatch (TagOpen _ attrs) (Cname cs)  = -- trace "#tagOpen-class" $
                                           case lookup "class" attrs of
                                             Nothing -> False
-                                            Just s -> elem cs (T.words s)
+                                            Just s -> cs `elem` T.words s
 tagMatch _ _ = False
 
 strToCond :: Text -> [TagCondition]
 strToCond s = map f $ T.words s
   where
-    f st = case (T.head st) of
+    f st = case T.head st of
       '.' -> tl `seq` Cname tl
       '#' -> tl `seq` EId tl
       _ -> Ename st
@@ -46,10 +45,10 @@ type Picker a = [Tag Text] -> a
 tagComporator = Comporator isTagOpen isTagClose tagMatch
 
 css ::  Text -> Picker a -> [Tag Text] -> [a]
-css str f tags = _select tagComporator (strToCond str) False f tags
+css str = _select tagComporator (strToCond str) False
 
 css1 ::  Text -> Picker a -> [Tag Text] -> [a]
-css1 str f tags = _select tagComporator (strToCond str) True f tags
+css1 str  = _select tagComporator (strToCond str) True
 
 _select :: (Show a, Show b) => Comporator a b -> [b] -> Bool -> ([a] -> c) -> [a] ->[c]
 _select _ [] _ _ _ = error "no condition given"
@@ -63,7 +62,7 @@ _select (Comporator isOpen isClose p) bx single f ax = loop [] ax
                                                            then [] else loop (t:stack) ts
 
     search _ [] = Nothing
-    search !stack !rest@(a:ax)
+    search !stack rest@(a:ax)
       | isOpen a = if match p (a:stack) bxv -- trace "#match " $
                    then Just (stack, rest)
                    else search (a:stack) ax
@@ -71,7 +70,6 @@ _select (Comporator isOpen isClose p) bx single f ax = loop [] ax
                       _:sx -> search sx ax
                       [] -> error "unbalanced sequence"
       | otherwise = search stack ax
-
 
 extract :: Text -> [Tag Text] -> Text
 extract str tags = case css1 str bodyText tags of
@@ -84,8 +82,8 @@ bodyText (t:tx) = T.concat $! loop [t] tx
   where
     loop _ [] = []
     loop [] _ = []
-    loop !sx !((TagText s):tx) =  s : loop sx tx
-    loop !(s:sx) !(t:tx)
+    loop !sx (TagText s:tx) =  s : loop sx tx
+    loop (s:sx) (t:tx)
       |isTagOpen t = loop (t:s:sx) tx
       |isTagClose t = loop sx tx
       |otherwise = loop (s:sx) tx
@@ -100,7 +98,7 @@ match p (a:ax) (b:bx)
   where
     lookupper _ [] = True
     lookupper [] _ = False
-    lookupper !ax !(b:bx) = case dropWhile (\a -> not $! p a b) ax of
+    lookupper !ax (b:bx) = case dropWhile (\a -> not $! p a b) ax of
                               [] -> False
                               _:rest -> lookupper rest bx
 
@@ -136,12 +134,10 @@ instance Applicative (Select n c) where
 
 instance Monad (Select n c) where
   return = pure
-  (>>=) :: (Select n c a) -> (a -> Select n c b) -> Select n c b
+  (>>=) :: Select n c a -> (a -> Select n c b) -> Select n c b
   (Select rs) >>= f = Select $ \s0 ->
     let (x, s1) = rs s0
     in runSelect (f x) s1
-
-
 
 iter :: SContext a b -> SContext a b
 iter (SContext topStack critx ax cmp@(Comporator isOpen isClose p)) =
@@ -149,7 +145,7 @@ iter (SContext topStack critx ax cmp@(Comporator isOpen isClose p)) =
   where
     (stack, rest) = search topStack ax
     search stack []  = (stack, [])
-    search !stack !rest@(a:ax)
+    search !stack rest@(a:ax)
       | isOpen a = if match p (a:stack) critx
                    then (stack, rest)
                    else search (a:stack) ax
@@ -167,10 +163,9 @@ iter (SContext topStack critx ax cmp@(Comporator isOpen isClose p)) =
       where
         lookupper _ [] = True -- all condition matchs
         lookupper [] _ = False
-        lookupper !ax !(b:bx) = case dropWhile (\a -> not $! p a b) ax of
+        lookupper !ax (b:bx) = case dropWhile (\a -> not $! p a b) ax of
                                   [] -> False
                                   _:rest -> lookupper rest bx
-
 
 backtrace1 :: SContext a b -> SContext a b
 backtrace1 (SContext stack bx ax cmp@(Comporator isOpen isClose _)) = SContext sx  bx rest cmp
@@ -178,7 +173,7 @@ backtrace1 (SContext stack bx ax cmp@(Comporator isOpen isClose _)) = SContext s
     (sx, rest) = go stack ax
     go _ [] = error "no more tags to backtrace"
     go [] rest = case stack of
-      _:[] -> ([], rest)
+      [_] -> ([], rest)
       _ -> error "go up too much in backtrace1"
     go (s:sx) (a:ax)
       | length stack == length sx + 2 = (s:sx, a:ax)
@@ -223,8 +218,8 @@ desire'  critx p = loc critx >> p
 context :: Select n c (SContext n c)
 context = Select $ \s -> (s, s)
 
-setContext :: (SContext n c) -> Select n c ()
-setContext  sc = Select $ \_ -> ((), sc)
+setContext :: SContext n c -> Select n c ()
+setContext  sc = Select $ const ((), sc)
 
 rest :: Select n c [n]
 rest = context >>= \(SContext _ _ ax _) -> return ax
@@ -234,18 +229,6 @@ end = do
   b <- fmap null rest
   trace ("call end got " ++ show b) $ return b
 
--- consumeNode :: Select n c a -> Select n c a
--- consumeNode p = do
---   sc <- context
---   x <- p
---   setContext $ backtrace1 sc
---   return x
-
--- nextTree :: Select n c ()
--- nextTree = do
---   sc <- context
---   setContext $ backtrace1 sc
-  
 stay :: Select n c a -> Select n c a
 stay p = do
   sc <- context
@@ -265,7 +248,7 @@ nextNode = do
                         [] -> (sx, [])
 
 many' :: [c] -> Select n c a -> Select n c [a]
-many' critx p =  stay $ loop
+many' critx p =  stay loop
   where
     loop = do
       loc critx
@@ -273,29 +256,26 @@ many' critx p =  stay $ loop
       if b
         then return []
         else trace "many found one" $ do
-          x <- stay $ p
+          x <- stay p
           nextNode
           rx <- loop
           return $ x:rx
 
 many :: T.Text -> TagSelect a -> TagSelect [a]
-many s p = many' (reverse $ strToCond s) p
+many s = many' (reverse $ strToCond s)
 
 select1 :: Select Int Int String
-select1 = do
-  desire' [1, 2]
-    (do
-        v <- fmap (+300) root
-        sx <- selx 100
-        sy <- sely 283.7
-        px <- fmap (map (*2)) path
-        return $  sx ++ sy ++ " " ++ show v ++ ", " ++ show px
-    )
+select1 = desire' [1, 2]
+          (do
+              v <- fmap (+300) root
+              sx <- selx 100
+              sy <- sely 283.7
+              px <- fmap (map (*2)) path
+              return $  sx ++ sy ++ " " ++ show v ++ ", " ++ show px
+          )
   where
     selx x = return $ show x
     sely y = return $ show y
 
 parseText :: T.Text -> TagSelect a -> a
 parseText txt sel = evalSelect sel $ initContext $ parseTags txt
-
-    
