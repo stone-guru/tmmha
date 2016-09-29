@@ -108,27 +108,18 @@ searchImageUrl n ctx = do
                       in s1 `seq` s2
     
 listPageParser :: OriginData -> IO [YieldData]
-listPageParser  od = trace "listPageParser run" $ return $ concat result
+listPageParser  od = trace "listPageParser run" $ return results
   where
-    tags = parseTags $ originText od
+    results = concat $ parseText (originText od) selector
+    selector = many ".personal-info" $ do
+      name <- textOf ".top .lady-name"
+      uid <-  attrOf ".top .friend-follow" "data-userid" 
+      age <-  textOf ".top em strong"
+      url <- attrOf  ".w610 a" "href"
+      let meta = M.fromList [ ("uid", uid), ("name", name), ("age", age), ("photoUrl", url)]
+      return [yieldUrl "detail" meta (gotDetailUrl uid),
+               yieldUrl "photo"  meta ("https:" ++ T.unpack url)]
 
-    result :: [[YieldData]]
-    result = css ".personal-info" pick tags
-    
-    pick1 :: [Tag T.Text] -> (T.Text, T.Text, T.Text)
-    pick1 top = let name = extract ".top .lady-name" top
-                    age = extract ".top em strong" top
-                    uid:_ = css1  ".top .friend-follow"  ((fromAttrib "data-userid").head) top
-                in (uid, name, age)
-  
-    pick :: [Tag T.Text] -> [YieldData]
-    pick tx = let (uid, name, age):_ = css1 ".top" pick1 tx
-                  url:_ =  css1 ".personal-info .w610 a" ((fromAttrib "href").head) tx
-                  meta = M.fromList [ ("uid", uid), ("name", name), ("age", age), ("photoUrl", url)]
-              in  [yieldUrl "detail" meta (gotDetailUrl uid),
-                   yieldUrl "photo"  meta ("https:" ++ T.unpack url)]
-
-     
 gotPageUrl :: Int -> String
 gotPageUrl i = "https://mm.taobao.com/json/request_top_list.htm?page=" ++ show i
 -- gotPageUrl i = "http://localhost:8080/json/request_top_list.htm?page=" ++ show i
