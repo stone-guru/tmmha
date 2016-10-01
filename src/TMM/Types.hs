@@ -7,7 +7,7 @@ import Control.Concurrent.Chan (Chan)
 import Data.Text (Text)
 import Data.Aeson (Value)
 import Data.HashMap.Strict (HashMap)
-import Data.ByteString.Lazy.Char8 (ByteString)
+import Data.ByteString.Char8 (ByteString)
 import Control.DeepSeq 
 
 type Meta = HashMap Text Text
@@ -17,13 +17,15 @@ data OriginEnt = OriginBinary !ByteString
 data YieldEnt = YieldBinary !ByteString
                | YieldText  !Text
                | YieldJson !Value
-               | YieldUrl  !String
+               | YieldUrl  !String (Maybe WantFmt)
                
 data ResultEnt = ResultBinary !ByteString
                | ResultText !Text
                | ResultJson !Value
+               
+data WantFmt = RawBinary | UtfText 
 
-data TaskData = TaskData !String !Meta !String               
+data TaskData = TaskData !String !Meta !String (Maybe WantFmt)
 data OriginData = OriginData !String !Text !Meta OriginEnt 
 data YieldData = YieldData !String !Meta YieldEnt
 data ResultData = ResultData !String !Meta ResultEnt
@@ -64,8 +66,8 @@ yieldText t meta text = YieldData t meta (YieldText text)
 yieldBinary :: String -> Meta -> ByteString -> YieldData
 yieldBinary t meta b = YieldData t meta (YieldBinary b)
 
-yieldUrl :: String -> Meta -> String -> YieldData
-yieldUrl t meta url = YieldData t meta (YieldUrl url)
+yieldUrl :: String -> Meta -> String -> Maybe WantFmt -> YieldData
+yieldUrl t meta url fmt = YieldData t meta (YieldUrl url fmt)
 
 -- metaLookup:: Octopus a => a -> Text -> Maybe Text
 -- metaLookup a k = lookup k (metaOf a)
@@ -82,6 +84,9 @@ instance ExchangeData YieldData  where
 instance ExchangeData ResultData  where
   typeOf (ResultData t _ _) = t
   metaOf (ResultData _ m _) = m
+  
+instance NFData WantFmt where
+  rnf x = ()
 
 instance NFData OriginEnt where
   rnf (OriginBinary b) = rnf b
@@ -91,7 +96,7 @@ instance NFData YieldEnt where
   rnf (YieldBinary b) = rnf b
   rnf (YieldText t) = rnf t
   rnf (YieldJson v) = rnf v
-  rnf (YieldUrl url) = rnf url
+  rnf (YieldUrl url fmt) = rnf url `seq` rnf fmt
   
 instance NFData ResultEnt where
   rnf (ResultBinary b) = rnf b
@@ -100,7 +105,7 @@ instance NFData ResultEnt where
 
   
 instance NFData TaskData where
-  rnf (TaskData t m url) = rnf t `seq` rnf m `seq` rnf url
+  rnf (TaskData t m url wf) = rnf t `seq` rnf m `seq` rnf url `seq` rnf wf
 
 instance NFData OriginData where
   rnf (OriginData t ct m e) = rnf t `seq` rnf ct `seq` rnf m `seq` rnf e

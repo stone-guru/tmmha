@@ -10,7 +10,7 @@ import TMM.Downloader
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as E
-import qualified Data.ByteString.Lazy.Char8 as B
+import qualified Data.ByteString.Char8 as B8
 import Text.HTML.TagSoup
 import qualified Data.Text.ICU.Convert as ICU  -- text-icu
 import qualified Data.Text.ICU as ICU
@@ -24,7 +24,8 @@ import Control.Applicative ((<$>), (<*>))
 import Data.HashMap.Strict (HashMap, (!))
 import qualified Data.HashMap.Strict as M
 import Debug.Trace
-  
+import qualified Text.HTML.TagSoup.Fast as F
+
 main = do
   args <- getArgs
   let (ipg, npg) = parseArgs args
@@ -55,13 +56,14 @@ mmProcessor (ResultData _ _ (ResultJson v)) = putStrLn $ show v
 mmProcessor (ResultData _ meta (ResultBinary img)) = do
   let ids = T.unpack $ meta ! "uid"
   putStrLn "Got Image "
-  B.writeFile ("./images/" ++ ids ++ ".jpg") img
+  B8.writeFile ("./images/" ++ ids ++ ".jpg") img
             
 detailInfoParser :: OriginData -> IO [YieldData]
-detailInfoParser od = trace "detail page parser" $
+detailInfoParser od = trace "detail page parser" $ do
+  cvt <- getB2t "gbk"
+  let  tags = map (textTag cvt) $ F.parseTags $ originBytes od
   return $ css1 ".mm-p-base-info ul" pick tags
   where
-    tags = parseTags $ originText od
     m2f fn = fn .= (metaOf od) ! fn
     pick tx = let height = fromMaybe "1" $ T.stripSuffix "CM" $ extract "ul .mm-p-height p" tx
                   weight = fromMaybe "1" $ T.stripSuffix "KG" $ extract "ul .mm-p-weight p" tx
@@ -78,7 +80,7 @@ photoPageParser :: OriginData -> IO [YieldData]
 photoPageParser od = trace "photoPageParser run" $ do
   --putStrLn $ show $ originText od
   url <- fmap head $ searchImageUrl 1 (originText od) 
-  return [yieldUrl "image"  (metaOf od) ("https:" ++ T.unpack url)]
+  return [yieldUrl "image"  (metaOf od) ("https:" ++ T.unpack url) Nothing]
 
 searchImageUrl :: Int -> T.Text -> IO [T.Text]
 searchImageUrl n ctx = do
@@ -108,17 +110,19 @@ searchImageUrl n ctx = do
                       in s1 `seq` s2
     
 listPageParser :: OriginData -> IO [YieldData]
-listPageParser  od = trace "listPageParser run" $ return results
+listPageParser  od = trace "listPageParser run" $ do
+  cvt <- ICU.open "gbk" Nothing
+  return $ parse cvt
   where
-    results = concat $ parseText (originText od) selector
+    parse cvt  = concat $ parseBinary cvt (originBytes od) selector
     selector = many ".personal-info" $ do
       name <- textOf ".top .lady-name"
       uid <-  attrOf ".top .friend-follow" "data-userid" 
       age <-  textOf ".top em strong"
       url <- attrOf  ".w610 a" "href"
       let meta = M.fromList [ ("uid", uid), ("name", name), ("age", age), ("photoUrl", url)]
-      return [yieldUrl "detail" meta (gotDetailUrl uid),
-               yieldUrl "photo"  meta ("https:" ++ T.unpack url)]
+      return [yieldUrl "detail" meta (gotDetailUrl uid) (Just RawBinary),
+               yieldUrl "photo"  meta ("https:" ++ T.unpack url) Nothing]
 
 gotPageUrl :: Int -> String
 gotPageUrl i = "https://mm.taobao.com/json/request_top_list.htm?page=" ++ show i

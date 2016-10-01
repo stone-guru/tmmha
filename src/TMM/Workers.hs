@@ -81,22 +81,22 @@ startSpider spider urls = do
   putMVar (_workingFlag spider) True
   where
     feedStartsUrl (t, url) = writeTChan (_taskQueue spider) $
-                                        Just $ TaskData t M.empty url
+                                        Just $ TaskData t M.empty url (Just RawBinary)
 
 downloadRoute :: Spider -> DL.Downloader -> String -> IO ()
 downloadRoute s dl rn = mapChannel rn
                          (_taskQueue s) (_taskLight s) (_respQueue s) download
   where
-    download task@(TaskData t meta url) = do
+    download task@(TaskData _ _ url _) = do
       response <- dl url
       return [ResponseData task response]
 
 analysisResp :: TaskData -> ShResponse -> IO OriginData  
-analysisResp (TaskData t meta url) response = do
+analysisResp (TaskData t meta url fmt) response = do
   let headers = responseHeaders  response
-  let bytes = responseBody response
+  let bytes = B8.toStrict $ responseBody response
   
-  case parseContentType $ lookup hContentType headers of
+  case parseContentType fmt (lookup hContentType headers) of
     (False, Just ctype, _) -> 
        return $! OriginData t  ctype (fillUrl url meta) (OriginBinary bytes)
   
@@ -111,9 +111,10 @@ analysisResp (TaskData t meta url) response = do
     fillUrl url meta = let s = T.pack url
                        in s `seq` M.insert "url" s  meta
 
-    parseContentType :: Maybe B.ByteString -> (Bool, Maybe T.Text, Maybe String)
-    parseContentType Nothing = (False, Just "application/octet-stream", Nothing)
-    parseContentType (Just ct) =
+    parseContentType :: Maybe WantFmt -> Maybe B.ByteString -> (Bool, Maybe T.Text, Maybe String)
+    parseContentType Nothing Nothing = (False, Just "application/octet-stream", Nothing)
+    parseContentType (Just RawBinary) _ = (False, Just "application/octet-stream", Nothing)
+    parseContentType Nothing (Just ct) =
       let isText = (B.isPrefixOf "text/" ct) || (B.isPrefixOf "application/js" ct)
           contentType = E.decodeUtf8 $! fst $! B.breakSubstring ";" ct
           charset = let rest = snd (B.breakSubstring "=" ct)
@@ -121,10 +122,10 @@ analysisResp (TaskData t meta url) response = do
                        else let cs = b2s (B.tail rest) in cs `seq` Just cs
       in isText `seq` contentType `seq` charset `seq` (isText, Just contentType, charset)
 
-    unicoding :: String -> B8.ByteString -> IO T.Text
+    unicoding :: String -> B.ByteString -> IO T.Text
     unicoding charset bytes = do
       locale <- ICU.open charset Nothing
-      let txt = ICU.toUnicode locale $ B8.toStrict bytes
+      let txt = ICU.toUnicode locale bytes
       return $! txt
 
 processRoute :: Spider -> IO ()
@@ -144,10 +145,10 @@ processRoute s = mapChannel "process"
         return Nothing
   
       
-    isUrl (YieldData _ _ (YieldUrl _)) = True
+    isUrl (YieldData _ _ (YieldUrl _ _)) = True
     isUrl _ = False
   
-    toTask (YieldData t meta (YieldUrl url)) = TaskData t meta url
+    toTask (YieldData t meta (YieldUrl url fmt)) = TaskData t meta url fmt
   
     yd2rd (YieldData t m ent) = ResultData t m (ye2re ent)
     ye2re (YieldBinary b) = ResultBinary b

@@ -9,9 +9,12 @@ where
 import qualified Data.Text as T
 import Data.Text(Text)
 import Text.HTML.TagSoup
+import qualified Text.HTML.TagSoup.Fast as F
 import Control.Exception
 import Data.Maybe
 import Debug.Trace
+import qualified Data.ByteString.Char8 as B8
+import qualified Data.Text.ICU.Convert as ICU  -- text-icu
 
 type Matcher a b = a -> b -> Bool
 type Pred a = a -> Bool
@@ -227,7 +230,8 @@ rest = context >>= \(SContext _ _ ax _) -> return ax
 end :: Select n c Bool
 end = do
   b <- fmap null rest
-  trace ("call end got " ++ show b) $ return b
+  -- trace ("call end got " ++ show b) $ return b
+  return b
 
 stay :: Select n c a -> Select n c a
 stay p = do
@@ -255,7 +259,8 @@ many' critx p =  stay loop
       b <- end
       if b
         then return []
-        else trace "many found one" $ do
+        else -- trace "many found one" $
+        do
           x <- stay p
           nextNode
           rx <- loop
@@ -279,3 +284,27 @@ select1 = desire' [1, 2]
 
 parseText :: T.Text -> TagSelect a -> a
 parseText txt sel = evalSelect sel $ initContext $ parseTags txt
+
+parseBinary :: ICU.Converter -> B8.ByteString -> TagSelect a -> a
+parseBinary cvt bytes sel =  evalSelect sel $ initContext tags
+  where
+    b2t = ICU.toUnicode cvt
+    tags = map (textTag b2t) $ F.parseTags bytes
+
+type B2T = B8.ByteString -> T.Text
+
+textTag :: B2T -> Tag B8.ByteString -> Tag T.Text
+textTag bst (TagOpen t a) = TagOpen (bst t) [(bst n, bst v) | (n,v) <- a]
+textTag bst (TagClose t) = TagClose (bst t)
+textTag bst (TagText t) = TagText (bst t)
+textTag bst (TagComment t) = TagComment (bst t)
+textTag bst (TagWarning t) = TagWarning (bst t)
+textTag bst (TagPosition r c) = TagPosition r c
+
+getB2t :: String -> IO B2T
+getB2t s = do
+  converter <- ICU.open s Nothing
+  return $ b2t converter
+  where
+    b2t cvt bytes = ICU.toUnicode cvt bytes
+    

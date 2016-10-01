@@ -42,6 +42,7 @@ executable tmmha
                 random >=1.1 && <1.2,
                 stm,
                 tagsoup,
+                fast-tagsoup,
                 text,
                 text-icu,
                 unix >=2.7 && <2.8,
@@ -49,5 +50,5 @@ executable tmmha
                 vector
   hs-source-dirs:      src
   default-language:    Haskell2010
-  ghc-options: -O2 -dynamic -rtsopts -threaded -fforce-recomp
-  -- -prof -auto-all -caf-all 
+  ghc-options: -O2 -rtsopts -threaded  -dynamic -fforce-recomp
+               -- -prof -auto-all -caf-all 
