@@ -4,9 +4,10 @@
 {-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
 import TMM.Types
 import TMM.Selector
-import TMM.Workers
+import qualified TMM.Workers as S
 import TMM.Downloader
 
+import Data.Text(Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as E
@@ -16,7 +17,7 @@ import qualified Data.Text.ICU.Convert as ICU  -- text-icu
 import qualified Data.Text.ICU as ICU
 import qualified Data.Text.ICU.Regex as R
 import qualified Data.List as L
-import Text.StringLike
+import Text.Printf
 import Data.Maybe
 import System.Environment (getArgs)
 import Data.Aeson
@@ -25,71 +26,97 @@ import Data.HashMap.Strict (HashMap, (!))
 import qualified Data.HashMap.Strict as M
 import Debug.Trace
 import qualified Text.HTML.TagSoup.Fast as F
+import System.IO
+import qualified Filesystem.Path.CurrentOS  as FP
 
 main = do
   args <- getArgs
   let (ipg, npg) = parseArgs args
-  
-  spider <- newSpider mmParser mmProcessor
-  startSpider spider (urls ipg npg)
-  waitEnd spider 
-  trace "ask spider close" $ askClose spider
-  trace  "wait spider closed " $ waitClosed spider
-  -- getLine
+  sum <- S.executeAction config (urls ipg npg)
+  verbose sum
   where
-    urls i n = map (((,) "list").gotPageUrl)  [i..(i + n -1)]
+    config = S.defaultConfig { S._cParsers = parsers
+                             , S._cProcessors = processors}
+    urls i n = map (\i -> (pageUrl i,  "list")) [i..(i + n -1)]
     parseArgs (a:b:_) = (read a::Int, read b::Int)
-      
-mmParser :: OriginData -> IO [YieldData]
-mmParser od = case typeOf od  of
-  "list" -> listPageParser od
-  "detail" -> detailInfoParser od
-  "photo" ->  photoPageParser od
-  "image" -> return [bypass od]
-  s -> error $ "unknown page type" ++ show s
+    parsers = [ ("list", listPageParser, Tags)
+              , ("detail", detailPageParser, Tags)
+              , ("photo" , photoPageParser, UtfText)
+              , ("image" , S.transmitParser, RawBinary)]
+    processors = [ ("detail", valueProcessor)
+                 , ("image", imageProcessor)]
+    toM :: Int -> Double
+    toM x = fromIntegral x / (1024 * 1024)
+
+    verbose sum = do
+      putStrLn $ printf "download: resources %d, total %.3f MB"
+                        (S._sDownloadCount sum) (toM $ S._sDownloadBytes sum)
+
+pageUrl :: Int -> Text
+pageUrl i = let base = "https://mm.taobao.com/json/request_top_list.htm?page="
+            in T.append base $ T.pack (show i)
+
+detailPageUrl :: Text -> Text
+detailPageUrl =  T.append "https://mm.taobao.com/self/info/model_info_show.htm?user_id="
+
+listPageParser :: SourceData -> IO [YieldData]
+listPageParser  od  = trace "listPageParser run" $ do
+  let result = L.concat $ runSelector (originTags od) selector
+  -- mapM_ print result
+  return result
   where
-    bypass (OriginData t _ meta (OriginBinary bin)) = yieldBinary t meta bin
+    selector = many ".personal-info" $ do
+      name <- textOf ".top .lady-name"
+      uid <-  attrOf ".top .friend-follow" "data-userid"
+      age <-  textOf ".top em strong"
+      url <- attrOf  ".w610 a" "href"
+      let meta = M.fromList [ ("uid", uid), ("name", name), ("age", age)]
+      return [ yieldUrl  od (detailPageUrl uid) meta "detail"
+             , yieldUrl od (T.append "https:" url) meta "photo"]
 
-
-mmProcessor :: ResultData -> IO ()
-mmProcessor (ResultData _ _ (ResultJson v)) = putStrLn $ show v
-mmProcessor (ResultData _ meta (ResultBinary img)) = do
-  let ids = T.unpack $ meta ! "uid"
-  putStrLn "Got Image "
-  B8.writeFile ("./images/" ++ ids ++ ".jpg") img
-            
-detailInfoParser :: OriginData -> IO [YieldData]
-detailInfoParser od = trace "detail page parser" $ do
-  cvt <- getB2t "gbk"
-  let  tags = map (textTag cvt) $ F.parseTags $ originBytes od
-  return $ css1 ".mm-p-base-info ul" pick tags
+detailPageParser :: SourceData -> IO [YieldData]
+detailPageParser od = trace "detailPageParser run" $ do
+  return [runSelector (originTags od) selector]
   where
     m2f fn = fn .= (metaOf od) ! fn
-    pick tx = let height = fromMaybe "1" $ T.stripSuffix "CM" $ extract "ul .mm-p-height p" tx
-                  weight = fromMaybe "1" $ T.stripSuffix "KG" $ extract "ul .mm-p-weight p" tx
-                  size = extract "ul .mm-p-size p" tx
-                  cup = extract "ul .mm-p-bar p" tx
-                  shoe = extract "ul .mm-p-shose p" tx
-              in  yieldJson "detail" M.empty $
-                    object [ m2f "uid", m2f "name", m2f "age"
-                           ,"height" .= height, "weight" .= weight, "size" .= size
-                           , "cup" .= cup, "shoe" .= shoe
-                           , m2f "photoUrl"]
+    selector = one ".mm-p-base-info ul" $ do
+      height <- fmap (T.stripSuffix "CM") (textOf ".mm-p-height p")
+      weight <- fmap (T.stripSuffix "KG") (textOf ".mm-p-weight p")
+      size <- textOf ".mm-p-size p"
+      cup <- textOf ".mm-p-bar p"
+      shoe <- textOf "ul .mm-p-shose p"
+      return $ yieldJson od $ object [ m2f "uid" , m2f "name", m2f "age"
+                                     , "size" .= size, "weight" .= weight
+                                     , "height" .= height
+                                     , "cup" .= cup, "shoe" .= shoe
+                                     ]
 
-photoPageParser :: OriginData -> IO [YieldData]
-photoPageParser od = trace "photoPageParser run" $ do
-  --putStrLn $ show $ originText od
-  url <- fmap head $ searchImageUrl 1 (originText od) 
-  return [yieldUrl "image"  (metaOf od) ("https:" ++ T.unpack url) Nothing]
+valueProcessor :: ResultData -> IO ()
+valueProcessor rd = putStrLn $ show $ resultValue rd
+  
+photoPageParser :: SourceData -> IO [YieldData]
+photoPageParser src = trace "photoPageParser run" $ do
+  urls <- searchImageUrl nImage (originText src)
+  return $ flip map urls $ \url ->
+    yieldUrl src (T.append "https:" url) (metaOf src) "image"
+  where
+    nImage = 2
+
+imageProcessor :: ResultData -> IO ()
+imageProcessor (ResultData td (RBinary bytes)) = do
+  let meta = _tdMeta td
+  let fn =  FP.fromText $ T.concat ["./images/" , meta ! "uid", "-",  meta ! "name" , ".jpg"]
+  T.putStrLn $ T.append "save image file "  (either id id $ FP.toText fn)
+  B8.writeFile (FP.encodeString fn) bytes
 
 searchImageUrl :: Int -> T.Text -> IO [T.Text]
 searchImageUrl n ctx = do
   re <- R.regex [] "bigUrl&quot;:&quot;([^&]*)"
   R.setText re ctx
-  T.putStrLn $ R.pattern re
+  -- T.putStrLn $ R.pattern re
   b <- R.find re 0
-  loop b n ctx re [] 
-  where 
+  loop b n ctx re []
+  where
     loop False _ _ _ sx = return sx
     loop _ 0 _ _ sx = return sx
     loop True i s re sx = do
@@ -108,57 +135,3 @@ searchImageUrl n ctx = do
     sub s start end = let s1 = T.take end s
                           s2 = T.drop start s1
                       in s1 `seq` s2
-    
-listPageParser :: OriginData -> IO [YieldData]
-listPageParser  od = trace "listPageParser run" $ do
-  cvt <- ICU.open "gbk" Nothing
-  return $ parse cvt
-  where
-    parse cvt  = concat $ parseBinary cvt (originBytes od) selector
-    selector = many ".personal-info" $ do
-      name <- textOf ".top .lady-name"
-      uid <-  attrOf ".top .friend-follow" "data-userid" 
-      age <-  textOf ".top em strong"
-      url <- attrOf  ".w610 a" "href"
-      let meta = M.fromList [ ("uid", uid), ("name", name), ("age", age), ("photoUrl", url)]
-      return [yieldUrl "detail" meta (gotDetailUrl uid) (Just RawBinary),
-               yieldUrl "photo"  meta ("https:" ++ T.unpack url) Nothing]
-
-gotPageUrl :: Int -> String
-gotPageUrl i = "https://mm.taobao.com/json/request_top_list.htm?page=" ++ show i
--- gotPageUrl i = "http://localhost:8080/json/request_top_list.htm?page=" ++ show i
-
-gotDetailUrl :: T.Text -> String
-gotDetailUrl i =  "https://mm.taobao.com//self/info/model_info_show.htm?user_id= "
-  ++ T.unpack i
-
-detailUrl :: String
-detailUrl = "https://mm.taobao.com//self/info/model_info_show.htm?user_id=189466234"
-
-pageUrl :: String
-pageUrl = "https://mm.taobao.com/json/request_top_list.htm?page=10"
-
-data ModelBrief = ModelBrief { uid  :: T.Text
-                             , name :: T.Text
-                             , age  :: T.Text
-                             , photoUrl :: T.Text
-                             } deriving(Show)
-
-instance FromJSON ModelBrief where
-  parseJSON (Object v) = ModelBrief <$>
-    (v .: "uid") <*>
-    (v .: "name") <*>
-    (v .: "age") <*>
-    (v .: "photoUrl")
-
-instance AsText ModelBrief where
-  asText (ModelBrief a b c d) = T.concat ["ModelBrief " , a, "," , b, ", " , c, ", ", d]
- 
-data ModelInfo = ModelInfo T.Text T.Text T.Text T.Text 
-                           T.Text T.Text T.Text T.Text T.Text deriving(Show)
-
-instance AsText ModelInfo where
-  asText (ModelInfo a b c d e f g h i) =
-    T.concat ["ModelInfo " , a, "," , b, ", " , c, ", ", d,
-              "," , e, ", " , f, ", ", g, ", " , h, ", ", i]
-

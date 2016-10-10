@@ -209,6 +209,9 @@ loc critx = Select $ \sc@(SContext stack _ ax cmp) ->
 at :: T.Text -> TagSelect a  -> TagSelect a
 at s p = stay $ desire' (reverse $ strToCond s) p
 
+one :: T.Text -> TagSelect a -> TagSelect a
+one = at
+
 textOf :: T.Text -> TagSelect T.Text
 textOf crit = at crit $ fmap bodyText nodes
 
@@ -282,6 +285,9 @@ select1 = desire' [1, 2]
     selx x = return $ show x
     sely y = return $ show y
 
+runSelector :: [Tag Text] -> TagSelect a -> a
+runSelector tags sel = evalSelect sel $ initContext tags
+  
 parseText :: T.Text -> TagSelect a -> a
 parseText txt sel = evalSelect sel $ initContext $ parseTags txt
 
