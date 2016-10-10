@@ -1,0 +1,5 @@
+* Scraha Issues
+** ONGING store crawled model information to postgresql database as tmmpy
+*** DONE learn postgresql-simple package   
+*** support user application using there own context and sharing it between parsers and processors
+
