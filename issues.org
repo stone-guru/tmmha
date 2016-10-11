@@ -1,5 +1,8 @@
 * Scraha Issues
-** ONGING store crawled model information to postgresql database as tmmpy
-*** DONE learn postgresql-simple package   
-*** support user application using there own context and sharing it between parsers and processors
+** DONE ONGING store crawled model information to postgresql database as tmmpy
+*** DONE hire postgresql-simple package   
+*** DONE support user application using there own context and sharing it between parsers and processors
+    function curry is enough
+** image format detect
+** add nth selector support in Selector module
 

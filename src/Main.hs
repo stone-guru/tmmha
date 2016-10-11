@@ -1,7 +1,8 @@
 -- -*- coding: utf-8 -*-
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE OverloadedStrings, ScopedTypeVariables #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 import TMM.Types
 import TMM.Selector
 import qualified TMM.Workers as S
@@ -10,6 +11,7 @@ import TMM.Downloader
 import Data.Text(Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
+import qualified Data.Text.Read as T
 import qualified Data.Text.Encoding as E
 import qualified Data.ByteString.Char8 as B8
 import Text.HTML.TagSoup
@@ -21,6 +23,7 @@ import Text.Printf
 import Data.Maybe
 import System.Environment (getArgs)
 import Data.Aeson
+import Data.Aeson.Types
 import Control.Applicative ((<$>), (<*>))
 import Data.HashMap.Strict (HashMap, (!))
 import qualified Data.HashMap.Strict as M
@@ -28,29 +31,49 @@ import Debug.Trace
 import qualified Text.HTML.TagSoup.Fast as F
 import System.IO
 import qualified Filesystem.Path.CurrentOS  as FP
+import Database.PostgreSQL.Simple as DB
+import Control.Monad
+
+data AppContext = AppContext { _dbConnection :: DB.Connection
+                             , _stageNum :: Int
+                             }
 
 main = do
   args <- getArgs
   let (ipg, npg) = parseArgs args
+  config <- initConfig
   sum <- S.executeAction config (urls ipg npg)
   verbose sum
   where
-    config = S.defaultConfig { S._cParsers = parsers
-                             , S._cProcessors = processors}
     urls i n = map (\i -> (pageUrl i,  "list")) [i..(i + n -1)]
+    initConfig = do
+      ctx <- initAppContext
+      return S.defaultConfig { S._cParsers = parsers
+                             , S._cProcessors = processors ctx}
     parseArgs (a:b:_) = (read a::Int, read b::Int)
     parsers = [ ("list", listPageParser, Tags)
               , ("detail", detailPageParser, Tags)
               , ("photo" , photoPageParser, UtfText)
               , ("image" , S.transmitParser, RawBinary)]
-    processors = [ ("detail", valueProcessor)
-                 , ("image", imageProcessor)]
+    processors ctx = [ ("detail", detailInfoProcessor ctx) --valueProcessor
+                     , ("image", imageProcessor)]
     toM :: Int -> Double
     toM x = fromIntegral x / (1024 * 1024)
 
     verbose sum = do
       putStrLn $ printf "download: resources %d, total %.3f MB"
                         (S._sDownloadCount sum) (toM $ S._sDownloadBytes sum)
+
+initAppContext :: IO AppContext
+initAppContext = do
+  conn <- connect defaultConnectInfo { connectHost = "localhost"
+                                     , connectDatabase = "tmm"
+                                     , connectUser = "bison"
+                                     , connectPassword = "123456"
+                                     }
+  [Only stage] <- withTransaction conn
+    (query_ conn "select f_stage_num()" :: IO [Only Int])
+  return $ AppContext conn stage
 
 pageUrl :: Int -> Text
 pageUrl i = let base = "https://mm.taobao.com/json/request_top_list.htm?page="
@@ -74,26 +97,61 @@ listPageParser  od  = trace "listPageParser run" $ do
       return [ yieldUrl  od (detailPageUrl uid) meta "detail"
              , yieldUrl od (T.append "https:" url) meta "photo"]
 
+t2i :: Text -> Int
+t2i txt = case T.decimal txt of
+            Right (i, _) -> i
+            Left msg -> 0
+
+t2f :: Text -> Float
+t2f txt = case T.double txt of
+            Right (x, _) -> realToFrac x
+            Left msg -> 0.0
+
+
 detailPageParser :: SourceData -> IO [YieldData]
 detailPageParser od = trace "detailPageParser run" $ do
   return [runSelector (originTags od) selector]
   where
-    m2f fn = fn .= (metaOf od) ! fn
     selector = one ".mm-p-base-info ul" $ do
-      height <- fmap (T.stripSuffix "CM") (textOf ".mm-p-height p")
-      weight <- fmap (T.stripSuffix "KG") (textOf ".mm-p-weight p")
-      size <- textOf ".mm-p-size p"
-      cup <- textOf ".mm-p-bar p"
+      height <- fmap (t2f . fst . T.breakOn "CM") $ textOf ".mm-p-height p"
+      weight <- fmap (t2f . fst . T.breakOn "KG") $ textOf ".mm-p-weight p"
+      [waist, bust, hip] <- fmap parseSize $ textOf ".mm-p-size p"
+      cups <- textOf ".mm-p-bar p"
       shoe <- textOf "ul .mm-p-shose p"
-      return $ yieldJson od $ object [ m2f "uid" , m2f "name", m2f "age"
-                                     , "size" .= size, "weight" .= weight
-                                     , "height" .= height
-                                     , "cup" .= cup, "shoe" .= shoe
+      return $ yieldJson od $ object [ "uid" .= (t2i $ metaOf od ! "uid")
+                                     , "name" .= metaOf od ! "name", "birthDate" .= birthDate
+                                     , "waist" .= waist, "bust" .= bust, "hip" .= hip
+                                     , "weight" .= weight, "height" .= height, "cup" .= cup cups
                                      ]
+    parseSize s = map t2f (T.splitOn "-" s)
+    birthDate = T.append (T.pack $ show (2016 - t2i (metaOf od ! "age"))) "-01-01"
+    cup s = fromJust $ L.find (flip T.isSuffixOf s ) ["B", "C", "D", "E", "F", "A", ""]
+      
+detailInfoProcessor :: AppContext -> ResultData -> IO ()
+detailInfoProcessor ctx (ResultData _ (RJson v)) = do
+  putStrLn $ show v
+  void $ withTransaction (_dbConnection ctx) $ do
+        case parse (paramParser $ _stageNum ctx)  v of
+          Error s -> error s
+          Success params -> do
+            query (_dbConnection ctx)
+              "select 1 from insert_model(?,?,?,?,?,?,?,?,?,?)"  params :: IO [Only Int]
+  where
+    paramParser st = withObject "modelinfo" $ \o -> do
+      uid :: Int <- o .: "uid"
+      name :: Text <- o .: "name"
+      birthDate :: Text <- o .: "birthDate"
+      height :: Float <- o .: "height"
+      weight :: Float <- o .: "weight"
+      waist :: Float <- o .: "waist"
+      bust :: Float <- o .: "bust"
+      hip :: Float <- o .: "hip"
+      cup :: Text <- o .: "cup"
+      return (st, uid, name, birthDate, height, weight, waist, bust, hip, cup)
 
 valueProcessor :: ResultData -> IO ()
 valueProcessor rd = putStrLn $ show $ resultValue rd
-  
+
 photoPageParser :: SourceData -> IO [YieldData]
 photoPageParser src = trace "photoPageParser run" $ do
   urls <- searchImageUrl nImage (originText src)
