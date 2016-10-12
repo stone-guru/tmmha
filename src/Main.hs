@@ -60,9 +60,8 @@ main = do
     toM :: Int -> Double
     toM x = fromIntegral x / (1024 * 1024)
 
-    verbose sum = do
-      putStrLn $ printf "download: resources %d, total %.3f MB"
-                        (S._sDownloadCount sum) (toM $ S._sDownloadBytes sum)
+    verbose sum = putStrLn $ printf "download: resources %d, total %.3f MB"
+                     (S._sDownloadCount sum) (toM $ S._sDownloadBytes sum)
 
 initAppContext :: IO AppContext
 initAppContext = do
@@ -109,33 +108,33 @@ t2f txt = case T.double txt of
 
 
 detailPageParser :: SourceData -> IO [YieldData]
-detailPageParser od = trace "detailPageParser run" $ do
+detailPageParser od = trace "detailPageParser run" $ 
   return [runSelector (originTags od) selector]
   where
     selector = one ".mm-p-base-info ul" $ do
-      height <- fmap (t2f . fst . T.breakOn "CM") $ textOf ".mm-p-height p"
-      weight <- fmap (t2f . fst . T.breakOn "KG") $ textOf ".mm-p-weight p"
-      [waist, bust, hip] <- fmap parseSize $ textOf ".mm-p-size p"
-      cups <- textOf ".mm-p-bar p"
+      height <- (t2f . fst . T.breakOn "CM") <$> textOf ".mm-p-height p"
+      weight <- (t2f . fst . T.breakOn "KG") <$> textOf ".mm-p-weight p"
+      [waist, bust, hip] <- parseSize <$> textOf ".mm-p-size p"
+      cup <- takeCup <$> textOf ".mm-p-bar p"
       shoe <- textOf "ul .mm-p-shose p"
-      return $ yieldJson od $ object [ "uid" .= (t2i $ metaOf od ! "uid")
-                                     , "name" .= metaOf od ! "name", "birthDate" .= birthDate
+      return $ yieldJson od $ object [ "uid" .= t2i (meta ! "uid")
+                                     , "name" .= meta ! "name", "birthDate" .= birthDate
                                      , "waist" .= waist, "bust" .= bust, "hip" .= hip
-                                     , "weight" .= weight, "height" .= height, "cup" .= cup cups
+                                     , "weight" .= weight, "height" .= height, "cup" .= cup
                                      ]
+    meta = metaOf od
     parseSize s = map t2f (T.splitOn "-" s)
-    birthDate = T.append (T.pack $ show (2016 - t2i (metaOf od ! "age"))) "-01-01"
-    cup s = fromJust $ L.find (flip T.isSuffixOf s ) ["B", "C", "D", "E", "F", "A", ""]
+    birthDate = T.append (T.pack $ show (2016 - t2i (meta ! "age"))) "-01-01"
+    takeCup s = fromJust $ L.find (`T.isSuffixOf` s ) ["C", "E", "D", "B", "F", "A", ""]
       
 detailInfoProcessor :: AppContext -> ResultData -> IO ()
 detailInfoProcessor ctx (ResultData _ (RJson v)) = do
-  putStrLn $ show v
-  void $ withTransaction (_dbConnection ctx) $ do
+  print v
+  void $ withTransaction (_dbConnection ctx) $ 
         case parse (paramParser $ _stageNum ctx)  v of
           Error s -> error s
-          Success params -> do
-            query (_dbConnection ctx)
-              "select 1 from insert_model(?,?,?,?,?,?,?,?,?,?)"  params :: IO [Only Int]
+          Success params -> query (_dbConnection ctx)
+                              "select 1 from insert_model(?,?,?,?,?,?,?,?,?,?)"  params :: IO [Only Int]
   where
     paramParser st = withObject "modelinfo" $ \o -> do
       uid :: Int <- o .: "uid"
@@ -150,20 +149,22 @@ detailInfoProcessor ctx (ResultData _ (RJson v)) = do
       return (st, uid, name, birthDate, height, weight, waist, bust, hip, cup)
 
 valueProcessor :: ResultData -> IO ()
-valueProcessor rd = putStrLn $ show $ resultValue rd
+valueProcessor rd = print (resultValue rd)
 
 photoPageParser :: SourceData -> IO [YieldData]
 photoPageParser src = trace "photoPageParser run" $ do
   urls <- searchImageUrl nImage (originText src)
-  return $ flip map urls $ \url ->
-    yieldUrl src (T.append "https:" url) (metaOf src) "image"
+  return $ flip map (zip [1..] urls) $ \(i, url) ->
+    yieldUrl src (T.append "https:" url) (M.insert "imageIndex" (asText i) $ metaOf src) "image"
   where
+    asText = T.pack.show
     nImage = 2
 
 imageProcessor :: ResultData -> IO ()
 imageProcessor (ResultData td (RBinary bytes)) = do
   let meta = _tdMeta td
-  let fn =  FP.fromText $ T.concat ["./images/" , meta ! "uid", "-",  meta ! "name" , ".jpg"]
+  let index = M.lookupDefault "1" "imageIndex" meta 
+  let fn =  FP.fromText $ T.concat ["./images/" , meta ! "uid", "-",  meta ! "name", "-", index, ".jpg"]
   T.putStrLn $ T.append "save image file "  (either id id $ FP.toText fn)
   B8.writeFile (FP.encodeString fn) bytes
 
