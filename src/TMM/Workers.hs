@@ -44,6 +44,7 @@ import qualified Data.ByteString as B
 import Network.HTTP.Client
 import Network.HTTP.Types.Header
 import Data.Maybe
+import Data.Either
 import Text.HTML.TagSoup
 import qualified Text.HTML.TagSoup.Fast as F
 import System.Log.Logger
@@ -65,8 +66,8 @@ data ResponseData = ResponseData TaskDesc ScraResponse
 instance NFData ResponseData where
   rnf (ResponseData t resp) = rnf t
 
-type TaskQueue = TChan (Maybe TaskData)
-type ResponseQueue = TChan (Maybe ResponseData)
+type TaskQueue = TChan (Either String TaskData)
+type ResponseQueue = TChan (Either String ResponseData)
 
 type PilotLight = TVar Bool
 
@@ -174,13 +175,13 @@ startSpider spider urls = do
   putMVar (_startFlag spider) True
   where
     feedStartsUrl (url, parName) = writeTChan (_taskQueue spider) $
-                                        Just $ TaskData $ TaskDesc url  M.empty parName
+                                        Right $ TaskData $ TaskDesc url  M.empty parName
 
 waitStarted :: Spider -> IO ()
 waitStarted = void . readMVar . _startFlag
 
 downloadRoute :: Spider -> DL.Downloader -> String -> IO ()
-downloadRoute spider dl rn = mapChannel rn (_taskQueue spider) (_taskLight spider)
+downloadRoute spider dl rn = mapChannel rn (_logger spider) (_taskQueue spider) (_taskLight spider)
                              (_respQueue spider) download
   where
     download (TaskData td) = do
@@ -271,7 +272,7 @@ textTag bst (TagWarning t) = TagWarning (bst t)
 textTag bst (TagPosition r c) = TagPosition r c
 
 processRoute :: Spider -> IO ()
-processRoute spider = mapChannel "process" (_respQueue spider) (_respLight spider)
+processRoute spider = mapChannel "process" (_logger spider) (_respQueue spider) (_respLight spider)
                          (_taskQueue spider) process
   where
     process (ResponseData td resp) = do
@@ -328,15 +329,15 @@ waitEnd spider = do
     return $ not b
 
 askClose :: Spider -> IO ()
-askClose s = atomically $ void $ forM_  (replicate 24  Nothing) (writeTChan (_taskQueue s))
+askClose s = atomically $ void $ forM_  (replicate 24  (Left "finished")) (writeTChan (_taskQueue s))
 
 waitClosed :: Spider -> IO ()
 waitClosed  =  void . takeMVar . _finishFlag
 
-mapChannel :: (NFData a, NFData b) =>  String -> TChan (Maybe a) -> PilotLight  ->
-              TChan (Maybe b) -> (a -> IO [b]) -> IO ()
-mapChannel msg cha pla chb f =
-  repeatDo msg $ bracket
+mapChannel :: (NFData a, NFData b) =>  String -> Logger -> TChan (Either String a) -> PilotLight  ->
+              TChan (Either String b) -> (a -> IO [b]) -> IO ()
+mapChannel routeName logger cha pla chb f =
+  repeatDo routeName $ bracket
   (do
       --putStrLn $ msg ++ " waiting next"
       atomically $ readTChan cha)
@@ -348,14 +349,21 @@ mapChannel msg cha pla chb f =
       --putStrLn $ msg ++ " got one"
       --putStrLn $ msg ++ " turn On"
       case x_ of
-        Nothing -> do
-          atomically $ writeTChan chb Nothing
-          return False
-        Just x -> do
-          yx_ <- f x
-          yx <- evaluate $ force yx_
-          atomically $ mapM_ (writeTChan chb . Just)  yx
-          return True)
+        Right x -> do
+          ex_ <- try $ f x
+          case ex_ of
+            Right yx_ -> do
+              yx <- evaluate $ force yx_
+              atomically $ mapM_ (writeTChan chb . Right)  yx
+              return True
+            Left (e :: SomeException) -> chainedClose $ show e
+        Left msg -> chainedClose msg
+  )
+  where
+    chainedClose msg = do
+      logL logger INFO  $ routeName ++ " end by msg " ++ msg
+      atomically $ writeTChan chb (Left msg)
+      return False
 
 turnOn :: PilotLight -> IO ()
 turnOn t = switch t True
