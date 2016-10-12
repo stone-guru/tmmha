@@ -235,11 +235,11 @@ analysisResp spider td response = do
           txt <- unicoding charset bytes
           return . Just $ SourceData td mime (OText txt)
         Tags -> do
-          let charset_ = charset
-          trace ("**" ++ charset ++ ", " ++ show mime) $ return () 
+          -- let charset_ = charset
+          -- trace ("**" ++ charset ++ ", " ++ show mime) $ return () 
           cvt <-  ICU.open charset Nothing
           let b2t = ICU.toUnicode cvt
-          let tags = map (textTag b2t) $ F.parseTags bytes
+          let tags = map (textTag b2t) $ F.parseTags bytes -- FIXME use GHC Rule to opt
           return . Just $ SourceData td mime (OTags tags)
       
   where
@@ -361,7 +361,8 @@ mapChannel routeName logger cha pla chb f =
   )
   where
     chainedClose msg = do
-      logL logger INFO  $ routeName ++ " end by msg " ++ msg
+      let prior = if msg == "finished" then INFO else ERROR
+      logL logger prior $ routeName ++ " end by msg " ++ msg
       atomically $ writeTChan chb (Left msg)
       return False
 
