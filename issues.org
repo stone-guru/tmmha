@@ -5,4 +5,7 @@
     function curry is enough
 ** image format detect
 ** add nth selector support in Selector module
-
+** bugs
+*** DONE process function error cause whole loop stoped
+** Optimazation
+*** Use GHC Rules at "map (textTag b2t) $ F.parseTags bytes"
