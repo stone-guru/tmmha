@@ -112,6 +112,7 @@ detailPageParser od = trace "detailPageParser run" $
   return [runSelector (originTags od) selector]
   where
     selector = one ".mm-p-base-info ul" $ do
+      birthDate <- birthp <$> searchText "li:nth-child(2)" "([0-9]+)月 *([0-9]+)日"
       height <- (t2f . fst . T.breakOn "CM") <$> textOf ".mm-p-height p"
       weight <- (t2f . fst . T.breakOn "KG") <$> textOf ".mm-p-weight p"
       [waist, bust, hip] <- parseSize <$> textOf ".mm-p-size p"
@@ -124,9 +125,12 @@ detailPageParser od = trace "detailPageParser run" $
                                      ]
     meta = metaOf od
     parseSize s = map t2f (T.splitOn "-" s)
-    birthDate = T.append (T.pack $ show (2016 - t2i (meta ! "age"))) "-01-01"
+    birthp [] = birthp ["01", "01"]
+    birthp ["", ""] = birthp ["01", "01"]
+    birthp [ms, ds] = T.concat [(T.pack $ show (2016 - t2i (meta ! "age")))
+                              , "-", ms, "-", ds]
     takeCup s = fromJust $ L.find (`T.isSuffixOf` s ) ["C", "E", "D", "B", "F", "A", ""]
-      
+
 detailInfoProcessor :: AppContext -> ResultData -> IO ()
 detailInfoProcessor ctx (ResultData _ (RJson v)) = do
   print v
