@@ -32,6 +32,11 @@ testAt = TestCase ( do  (i, n) <- runP20Sel nameAndId
     nameAndId = at ".personal-info .top " $
       (,) <$> attrOf ".friend-follow" "data-userid" <*> textOf ".lady-name"
 
+testAtFail = TestCase ( do  src <- runP20Sel notThisImage
+                            assertEqual "src" "xxx" src)
+  where
+    notThisImage = at ".personal-info .top " $ attrOf "img" "src"
+
 p20Tests = TestList [TestLabel "testAt" testAt]
 
 testNth1 = TestLabel "testNth1" $

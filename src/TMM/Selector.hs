@@ -34,16 +34,14 @@ data AdCrit = AdNone             -- ^ No addon condition
 type Textag = Tag Text
 
 data Context = Context { _stack  :: [(Textag, Int)]
-                         , _crits :: [Criterion]
-                         , _rest :: [Textag]
-                         , _nexti :: Int
-                         }
+                       , _rest :: [Textag]
+                       , _nexti :: Int
+                       }
 
 instance Show Context  where
-  show (Context sx cx ax n) = "Context stack = " ++ show sx
-                               ++ ", critx = " ++ show cx
-                               ++ ", rest = " ++ show ax
-                               ++ ", nexti = " ++ show n
+  show (Context sx ax n) = "Context stack = " ++ show sx
+                           ++ ", rest = " ++ show ax
+                           ++ ", nexti = " ++ show n
 
 newtype Select a = Select {runSelect :: Context -> (a, Context)}
 
@@ -110,7 +108,7 @@ evalSelect :: Select a -> Context -> a
 evalSelect s sc = fst (runSelect s sc)
 
 initContext :: [Textag] -> Context
-initContext tx = Context [(beginTag, 1)] [] (regular tx) 1
+initContext tx = Context [(beginTag, 1)] (regular tx) 1
   where
     beginTag = TagOpen "//" []
     regular [] = TagClose "//" : []
@@ -137,12 +135,12 @@ path :: Select [Textag]
 path = fmap (map fst) (cget _stack)
 
 loc :: [Criterion] -> Select Bool
-loc critx = Select $ \sc -> iter sc{_crits = critx}
+loc critx = Select $ \sc -> seek critx sc
 
-iter :: Context -> (Bool, Context)
-iter (Context topStack critx ax nexti) =
+seek :: [Criterion] -> Context -> (Bool, Context)
+seek critx (Context topStack ax nexti) =
   -- trace (show stack ++ ", " ++ show (take 5 rest)) $
-  (found, Context stack critx rest i)
+  (found, Context stack rest i)
   where
     (found, stack, i, rest) = search topStack nexti ax 
     search [] _ _  = (False, topStack, nexti, ax) -- stack empty, means not found within current sub tree
@@ -177,18 +175,12 @@ at s p = stay $ do
     then restrict >>  p
     else error $ show s ++ " not found"
 
--- at :: Text -> Select a -> Select a
--- at s p = fromJust <$> atMaybe s p
-  
 restrict :: Select ()
 restrict = Select $ \sc ->
   let stack  = case  _stack sc of
                  s:_ -> [s]
                  [] -> []
   in  ((), sc{_stack = stack})
-
-one :: Text -> Select a -> Select a
-one = at
 
 textOf :: Text -> Select Text
 textOf crit = at crit $ fmap bodyText nodes
@@ -201,12 +193,6 @@ searchText crit pat = do
   s <- textOf crit
   let (_, _, _, r) = s =~ pat :: (Text, Text, Text, [Text])
   return r
-
-end :: Select Bool
-end = do
-  b <- fmap null $ cget _rest
-  -- trace ("call end got " ++ show b) $ return b
-  return b
 
 stay :: Select a -> Select a
 stay p = do
