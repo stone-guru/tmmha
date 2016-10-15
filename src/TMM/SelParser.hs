@@ -132,13 +132,3 @@ parseCssSels =  loop
         Just s -> do
           rx <- loop
           return $ s:rx
-
-
-          
-
-    
-
-
-  
-
-  

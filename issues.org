@@ -1,11 +1,18 @@
 * Scraha Issues
-** DONE ONGING store crawled model information to postgresql database as tmmpy
+** features
+*** DONE store crawled model information to postgresql database as tmmpy
 *** DONE hire postgresql-simple package   
 *** DONE support user application using there own context and sharing it between parsers and processors
     function curry is enough
-** image format detect
-** add nth selector support in Selector module
+*** image format detect
+    detect image format from reponsed bytestring instead of url file extension.
+*** DONE add nth selector support in Selector module
+*** restrict node search range within its parent
+    for example, in this statement (at ".level1 .level2" $ textOf "span"), searching of span tag must
+be in the branch of .level2. if go out of .level2, search should fail.
+
 ** bugs
 *** DONE process function error cause whole loop stoped
+ exception from injected function within bracket cause loop stoped.
 ** Optimazation
 *** Use GHC Rules at "map (textTag b2t) $ F.parseTags bytes"

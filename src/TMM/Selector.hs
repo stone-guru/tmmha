@@ -33,23 +33,19 @@ data AdCrit = AdNone             -- ^ No addon condition
 
 type Textag = Tag Text
 
-type Matcher = Textag -> Int -> Criterion -> Bool
-type Pred = Textag -> Bool
-data Comporator = Comporator Pred Pred Matcher
-
-data SContext = SContext { _stack  :: [(Textag, Int)]
+data Context = Context { _stack  :: [(Textag, Int)]
                          , _crits :: [Criterion]
                          , _rest :: [Textag]
                          , _nexti :: Int
-                         , _cmp :: Comporator}
+                         }
 
-instance Show SContext  where
-  show (SContext sx cx ax n _) = "SContext stack = " ++ show sx
-                                 ++ ", critx = " ++ show cx
-                                 ++ ", rest = " ++ show ax
-                                 ++ ", nexti = " ++ show n
+instance Show Context  where
+  show (Context sx cx ax n) = "Context stack = " ++ show sx
+                               ++ ", critx = " ++ show cx
+                               ++ ", rest = " ++ show ax
+                               ++ ", nexti = " ++ show n
 
-newtype Select a = Select{ runSelect :: SContext -> (a, SContext) }
+newtype Select a = Select {runSelect :: Context -> (a, Context)}
 
 instance Functor Select where
   fmap f s1 = Select $ \s -> let (x, s') = runSelect s1 s
@@ -69,8 +65,9 @@ instance Monad Select where
     let (x, s1) = rs s0
     in runSelect (f x) s1
 
-tagComporator :: Comporator
-tagComporator = Comporator isTagOpen isTagClose critMatch
+type Matcher = Textag -> Int -> Criterion -> Bool
+type Pred = Textag -> Bool
+data Comporator = Comporator Pred Pred Matcher
 
 critMatch :: Textag -> Int -> Criterion -> Bool
 critMatch t i (Criterion entCrit adCrit) = tagMatch t entCrit && adMatch adCrit i
@@ -86,7 +83,7 @@ critMatch t i (Criterion entCrit adCrit) = tagMatch t entCrit && adMatch adCrit 
         Nothing -> False
         Just s -> cs `elem` T.words s
     tagMatch _ _ = False
-    
+
     adMatch :: AdCrit -> Int -> Bool
     adMatch AdNone _ = True
     adMatch FirstChild i = i == 1
@@ -96,7 +93,7 @@ parseCrit :: Text -> [Criterion]
 parseCrit s = map f $ T.words s
   where
     f st = case T.head st of
-             '.' -> crit CName (T.tail st) 
+             '.' -> crit CName (T.tail st)
              '#' -> crit EId (T.tail st)
              _ -> crit EName st
     crit cf s | (s1, s2) <- T.breakOn ":" s = Criterion (cf s1) (adcrit s2)
@@ -109,90 +106,105 @@ parseCrit s = map f $ T.words s
      | otherwise = wrong $ T.unpack ads
     wrong reason = error $ "unrecongnized tag selector " ++ reason
 
-iter :: SContext -> SContext
-iter (SContext topStack critx ax nexti cmp@(Comporator isOpen isClose p)) =
-  -- trace (show stack ++ ", " ++ show (take 5 rest)) $
-  SContext stack critx rest i cmp
+evalSelect :: Select a -> Context -> a
+evalSelect s sc = fst (runSelect s sc)
+
+initContext :: [Textag] -> Context
+initContext tx = Context [(beginTag, 1)] [] (regular tx) 1
   where
-    (stack, i, rest) = search topStack nexti ax
-    search stack i []  = (stack, i, [])
+    beginTag = TagOpen "//" []
+    regular [] = TagClose "//" : []
+    regular (a:ax) = a : (regular ax)
+
+cget :: (Context -> a) -> Select a
+cget f = Select $ \sc -> (f sc, sc)
+
+cmodify :: (Context -> Context) -> Select ()
+cmodify f = Select $ \sc -> ((), f sc)
+
+context :: Select Context
+context = Select $ \s -> (s, s)
+
+root :: Select Textag
+root = fmap (fst.head) $ cget _stack
+
+nodes :: Select [Textag]
+nodes = do
+  h <- root
+  fmap ((:) h) (cget _rest)
+
+path :: Select [Textag]
+path = fmap (map fst) (cget _stack)
+
+loc :: [Criterion] -> Select Bool
+loc critx = Select $ \sc -> iter sc{_crits = critx}
+
+iter :: Context -> (Bool, Context)
+iter (Context topStack critx ax nexti) =
+  -- trace (show stack ++ ", " ++ show (take 5 rest)) $
+  (found, Context stack critx rest i)
+  where
+    (found, stack, i, rest) = search topStack nexti ax 
+    search [] _ _  = (False, topStack, nexti, ax) -- stack empty, means not found within current sub tree
+    search _ _ [] = (False, topStack, nexti, ax) -- no more nodes
     search !stack i (a:ax)
-      | isOpen a = let stack' = (a, i):stack
-                   in if match p stack' critx
-                      then (stack, i, a:ax)
+      | isTagOpen a = let stack' = (a, i):stack
+                   in if match stack' critx
+                      then (True, stack', 1, ax)
                       else search stack' 1  ax
-      | isClose a = case stack of
+      | isTagClose a = case stack of
           (_, k):tails -> search tails (k+1) ax
-          _ -> error "iter: unbalanced tags"
+          _ -> error "iter: inner error stack should not be empty at here"
       | otherwise = search stack i ax
 
     {-# INLINE match #-}
-    match :: Matcher -> [(Textag, Int)] -> [Criterion] -> Bool
-    match _ _ []  = True -- empty conditon means match any node
-    match p ((a, i):ax) (b:bx)
-      | p a i b = lookupper ax bx
+    match :: [(Textag, Int)] -> [Criterion] -> Bool
+    match _ []  = True -- empty conditon means match any node
+    match ((a, i):ax) (b:bx)
+      | critMatch a i b = lookupper ax bx
       | otherwise =  False
       where
         lookupper _ [] = True -- all condition matchs
         lookupper [] _ = False
-        lookupper !ax (b:bx) = case dropWhile (\(a, i) -> not $! p a i b) ax of
+        lookupper !ax (b:bx) = case dropWhile (\(a, i) -> not $! critMatch a i b) ax of
                                   [] -> False
                                   _:rest -> lookupper rest bx
 
-evalSelect :: Select a -> SContext -> a
-evalSelect s sc = fst (runSelect s sc)
+at :: Text -> Select a -> Select a
+at s p = stay $ do
+  found <- loc (reverse $ parseCrit s)
+  if found
+    then restrict >>  p
+    else error $ show s ++ " not found"
 
-initContext :: [Textag] -> SContext
-initContext tx = SContext [] [] tx 1 tagComporator
+-- at :: Text -> Select a -> Select a
+-- at s p = fromJust <$> atMaybe s p
+  
+restrict :: Select ()
+restrict = Select $ \sc ->
+  let stack  = case  _stack sc of
+                 s:_ -> [s]
+                 [] -> []
+  in  ((), sc{_stack = stack})
 
-
-nodes :: Select [Textag]
-nodes = Select $ \sc -> (_rest sc, sc)
-
-root :: Select Textag
-root = fmap head nodes
-
-path :: Select [Textag]
-path = Select $ \sc -> let cur =  head (_rest sc)
-                           stacks = map fst (_stack sc)
-                       in (cur:stacks, sc)
-
-loc :: [Criterion] -> Select ()
-loc critx = Select $ \sc -> ((), iter $ sc{_crits = critx})
-
-at :: T.Text -> Select a -> Select a
-at s p = stay $ desire' (reverse $ parseCrit s) p
-
-one :: T.Text -> Select a -> Select a
+one :: Text -> Select a -> Select a
 one = at
 
-textOf :: T.Text -> Select T.Text
+textOf :: Text -> Select Text
 textOf crit = at crit $ fmap bodyText nodes
 
-attrOf :: T.Text -> T.Text -> Select T.Text
+attrOf :: Text -> Text -> Select Text
 attrOf crit name = at crit $ fmap (fromAttrib name) root
 
-searchText :: T.Text -> T.Text -> Select [T.Text]
+searchText :: Text -> Text -> Select [Text]
 searchText crit pat = do
   s <- textOf crit
   let (_, _, _, r) = s =~ pat :: (Text, Text, Text, [Text])
   return r
 
-desire' :: [Criterion] -> Select a -> Select a
-desire'  critx p = loc critx >> p
-
-context :: Select SContext
-context = Select $ \s -> (s, s)
-
-setContext :: SContext -> Select ()
-setContext  sc = Select $ const ((), sc)
-
-rest :: Select [Textag]
-rest = context >>= \sc -> return $ _rest sc
-
 end :: Select Bool
 end = do
-  b <- fmap null rest
+  b <- fmap null $ cget _rest
   -- trace ("call end got " ++ show b) $ return b
   return b
 
@@ -200,102 +212,20 @@ stay :: Select a -> Select a
 stay p = do
   sc <- context
   x <- p
-  setContext sc
+  cmodify $ const sc
   return x
 
-nextNode :: Select ()
-nextNode = do
-  SContext stack bx ax n cmp@(Comporator isOpen isClose _) <- context
-  let (sx, rest, i) = go isOpen isClose stack ax i
-  setContext $ SContext sx bx rest i cmp
+many :: Text -> Select a -> Select [a]
+many s p = stay $ loop []
   where
-    go _ _ sx [] i = (sx, [], i)
-    go isOpen isClose sx (a:ax) i
-      | isOpen a = ((a, i):sx, ax, 1)
-      | isClose a = case sx of
-          (t, k):sx1 -> go isOpen isClose sx1 ax (k + 1)
-          [] -> error $ "nextNode unbalanced tree when isClose a"
-      | otherwise = go isOpen isClose sx ax i
-      
-      -- case dropWhile (not.isOpen) ax of
-      --                   a:rest -> (a:sx, rest)
-      --                   [] -> (sx, [])
-
-many :: T.Text -> Select a -> Select [a]
-many s = many' (reverse $ parseCrit s)
-
-many' :: [Criterion] -> Select a -> Select [a]
-many' critx p =  stay loop
-  where
-    loop = do
-      loc critx
-      b <- end
-      if b
-        then return []
-        else -- trace "many found one" $
-        do
-          x <- stay p
-          nextNode
-          rx <- loop
-          return $ x:rx
-
-runSelector :: [Textag] -> Select a -> a
-runSelector tags sel = evalSelect sel $ initContext tags
-  
-parseText :: T.Text -> Select a -> a
-parseText txt sel = runSelector (parseTags txt)  sel
-
-parseBinary :: ICU.Converter -> B8.ByteString -> Select a -> a
-parseBinary cvt bytes sel =  evalSelect sel $ initContext tags
-  where
-    b2t = ICU.toUnicode cvt
-    tags = map (textTag b2t) $ F.parseTags bytes
-
-type B2T = B8.ByteString -> T.Text
-
-textTag :: B2T -> Tag B8.ByteString -> Tag T.Text
-textTag bst (TagOpen t a) = TagOpen (bst t) [(bst n, bst v) | (n,v) <- a]
-textTag bst (TagClose t) = TagClose (bst t)
-textTag bst (TagText t) = TagText (bst t)
-textTag bst (TagComment t) = TagComment (bst t)
-textTag bst (TagWarning t) = TagWarning (bst t)
-textTag bst (TagPosition r c) = TagPosition r c
-
-getB2t :: String -> IO B2T
-getB2t s = do
-  converter <- ICU.open s Nothing
-  return $ b2t converter
-  where
-    b2t cvt bytes = ICU.toUnicode cvt bytes
-    
--- old implementations
--- css ::  Text -> Picker a -> [Tag Text] -> [a]
--- css str = _select tagComporator (parseCrit str) False
-
--- css1 ::  Text -> Picker a -> [Tag Text] -> [a]
--- css1 str  = _select tagComporator (parseCrit str) True
-
--- _select :: (Show a, Show b) => Comporator a b -> [b] -> Bool -> ([a] -> c) -> [a] ->[c]
--- _select _ [] _ _ _ = error "no condition given"
--- _select (Comporator isOpen isClose p) bx single f ax = loop [] ax
---   where
---     bxv = reverse bx
-
---     loop !sx !ax = case search sx ax of
---                    Nothing-> []
---                    Just (stack, t:ts) -> (:) (f (t:ts))  $ if single
---                                                            then [] else loop (t:stack) ts
-
---     search _ [] = Nothing
---     search !stack rest@(a:ax)
---       | isOpen a = if match p (a:stack) bxv -- trace "#match " $
---                    then Just (stack, rest)
---                    else search (a:stack) ax
---       | isClose a = case stack of
---                       _:sx -> search sx ax
---                       [] -> error "unbalanced sequence"
---       | otherwise = search stack ax
-
+    critx = reverse $ parseCrit s
+    loop rx = do
+      b <- loc critx
+      if not b
+        then return $ reverse rx
+        else do
+          x <- stay $ restrict >> p
+          loop (x:rx)
 
 bodyText :: [Textag] -> Text
 bodyText [] = T.empty
@@ -309,48 +239,31 @@ bodyText (t:tx) = T.concat $! loop [t] tx
       |isTagClose t = loop sx tx
       |otherwise = loop (s:sx) tx
 
--- {-# INLINE match #-}
--- match :: Matcher a b -> [a] -> [b] -> Bool
--- match _ [] _  = False  -- path is empty
--- match _ _ []  = error "condition should not empty"
--- match p (a:ax) (b:bx)
---   | p a 0 b = lookupper ax bx
---   | otherwise =  False
---   where
---     lookupper _ [] = True
---     lookupper [] _ = False
---     lookupper !ax (b:bx) = case dropWhile (\a -> not $! p a 0 b) ax of
---                               [] -> False
---                               _:rest -> lookupper rest bx
+runSelector :: [Textag] -> Select a -> a
+runSelector tags sel = evalSelect sel $ initContext tags
 
--- backtrace1 :: SContext a b -> SContext a b
--- backtrace1 (SContext stack bx ax cmp@(Comporator isOpen isClose _)) = SContext sx  bx rest cmp
---   where
---     (sx, rest) = go stack ax
---     go _ [] = error "no more tags to backtrace"
---     go [] rest = case stack of
---       [_] -> ([], rest)
---       _ -> error "go up too much in backtrace1"
---     go (s:sx) (a:ax)
---       | length stack == length sx + 2 = (s:sx, a:ax)
---       | isOpen a = go (a:s:sx) ax
---       | isClose a = go sx ax
---       | otherwise = go (s:sx) ax
+parseText :: Text -> Select a -> a
+parseText txt sel = runSelector (parseTags txt)  sel
 
--- extract :: Text -> [Tag Text] -> Text
--- extract str tags = case css1 str bodyText tags of
---                      t:_ -> t
---                      [] -> T.empty
+parseBinary :: ICU.Converter -> B8.ByteString -> Select a -> a
+parseBinary cvt bytes sel =  evalSelect sel $ initContext tags
+  where
+    b2t = ICU.toUnicode cvt
+    tags = map (textTag b2t) $ F.parseTags bytes
 
--- select1 :: Select Int Int String
--- select1 = desire' [1, 2]
---           (do
---               v <- fmap (+300) root
---               sx <- selx 100
---               sy <- sely 283.7
---               px <- fmap (map (*2)) path
---               return $  sx ++ sy ++ " " ++ show v ++ ", " ++ show px
---           )
---   where
---     selx x = return $ show x
---     sely y = return $ show y
+type B2T = B8.ByteString -> Text
+
+textTag :: B2T -> Tag B8.ByteString -> Tag Text
+textTag bst (TagOpen t a) = TagOpen (bst t) [(bst n, bst v) | (n,v) <- a]
+textTag bst (TagClose t) = TagClose (bst t)
+textTag bst (TagText t) = TagText (bst t)
+textTag bst (TagComment t) = TagComment (bst t)
+textTag bst (TagWarning t) = TagWarning (bst t)
+textTag bst (TagPosition r c) = TagPosition r c
+
+getB2t :: String -> IO B2T
+getB2t s = do
+  converter <- ICU.open s Nothing
+  return $ b2t converter
+  where
+    b2t cvt bytes = ICU.toUnicode cvt bytes

@@ -8,6 +8,7 @@ import TMM.Selector
 import qualified TMM.Workers as S
 import TMM.Downloader
 
+import qualified Data.Char as C
 import Data.Text(Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -125,11 +126,12 @@ detailPageParser od = trace "detailPageParser run" $
                                      ]
     meta = metaOf od
     parseSize s = map t2f (T.splitOn "-" s)
-    birthp [] = birthp ["01", "01"]
+    birthp [] = birthp ["", ""]
     birthp ["", ""] = birthp ["01", "01"]
     birthp [ms, ds] = T.concat [(T.pack $ show (2016 - t2i (meta ! "age")))
                               , "-", ms, "-", ds]
-    takeCup s = fromJust $ L.find (`T.isSuffixOf` s ) ["C", "E", "D", "B", "F", "A", ""]
+    takeCup s = let c = C.toUpper $ T.last s
+                in if C.isLetter c then T.singleton c else ""
 
 detailInfoProcessor :: AppContext -> ResultData -> IO ()
 detailInfoProcessor ctx (ResultData _ (RJson v)) = do

@@ -7,7 +7,7 @@ import Test.HUnit
 
 import TMM.Types
 import TMM.Selector
-  
+
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Data.Text.Encoding as E
@@ -29,9 +29,9 @@ testAt = TestCase ( do  (i, n) <- runP20Sel nameAndId
                         assertEqual "name" "霖小兔" n
                         assertEqual "id"  "717117822" i)
   where
-    nameAndId = at ".personal-info .top " $ 
+    nameAndId = at ".personal-info .top " $
       (,) <$> attrOf ".friend-follow" "data-userid" <*> textOf ".lady-name"
-  
+
 p20Tests = TestList [TestLabel "testAt" testAt]
 
 testNth1 = TestLabel "testNth1" $
@@ -67,12 +67,12 @@ runP20Sel sel = do
   return $ evalSelect sel (initContext tags)
 
 m8509 = "/home/bison/sources/haskell/tmmha/test/data/model_info_28168509.html"
-  
+
 runM8509Sel :: Select a -> IO a
 runM8509Sel sel = do
   tags <- parseFile m8509
   return $ evalSelect sel (initContext tags)
-  
+
 parseFile :: String -> IO [TextTag]
 parseFile fn = do
   cxt <- T.readFile fn
