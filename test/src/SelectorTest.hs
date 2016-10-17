@@ -24,6 +24,8 @@ import Control.Applicative ((<$>), (<*>))
 import Data.HashMap.Strict (HashMap, (!))
 import qualified Data.HashMap.Strict as M
 import Debug.Trace
+import Data.IntMap (IntMap)
+import qualified Data.IntMap as IntMap
 
 testAt = TestCase ( do  (i, n) <- runP20Sel nameAndId
                         assertEqual "name" "霖小兔" n
@@ -82,3 +84,30 @@ parseFile :: String -> IO [TextTag]
 parseFile fn = do
   cxt <- T.readFile fn
   return $ parseTags cxt
+
+
+childCountTest1 = TestLabel "childCount1" $
+  (TestCase $ do
+      let tags = parseTags ccHtml1
+          tagsn@((t1, sn1):rest) = zip tags [1..]
+      let (v, cm) = childCount [(t1, sn1, 1)] rest actionPush IntMap.empty
+      putStrLn $ IntMap.showTree cm
+      assertBool "ok" True
+      mapM_ (putStrLn . show ) $ map (\(t, sn) -> (t, sn, IntMap.findWithDefault 0 sn cm)) tagsn
+      )
+
+ccHtml1 = T.concat [
+  "<div id=\"div1\">\n"
+  ,"<div id=\"div11\">\n"
+  , "<ul id=\"ul1\">\n"
+  ,    "<li id=\"li11\">list item 1</li>\n"
+  ,    "<li id=\"li12\">list item 2</li>\n"
+  ,    "<li id=\"li13\">list item 3</li>\n"
+  ,    "<li id=\"li14\">list item 4</li>\n"
+  ,  "</ul>\n"
+  ,  "<p> some text </p>\n"
+  , "</div>\n"
+  , "<a href='blank'> <p>link text</p> </a>\n"
+  , "</div>\n"
+  ]
+                     
