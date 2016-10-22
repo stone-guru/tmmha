@@ -117,8 +117,8 @@ detailPageParser od = trace "detailPageParser run" $
       height <- (t2f . fst . T.breakOn "CM") <$> textOf ".mm-p-height p"
       weight <- (t2f . fst . T.breakOn "KG") <$> textOf ".mm-p-weight p"
       [waist, bust, hip] <- parseSize <$> textOf ".mm-p-size p"
-      cup <- takeCup <$> textOf ".mm-p-bar p"
-      shoe <- textOf "ul .mm-p-shose p"
+      -- cup <- takeCup <$> textOf ".mm-p-bar p"
+      cup <- takeCup <$> textOf "li:nth-last-child(2) p"
       return $ yieldJson od $ object [ "uid" .= t2i (meta ! "uid")
                                      , "name" .= meta ! "name", "birthDate" .= birthDate
                                      , "waist" .= waist, "bust" .= bust, "hip" .= hip
@@ -130,8 +130,9 @@ detailPageParser od = trace "detailPageParser run" $
     birthp ["", ""] = birthp ["01", "01"]
     birthp [ms, ds] = T.concat [(T.pack $ show (2016 - t2i (meta ! "age")))
                               , "-", ms, "-", ds]
-    takeCup s = let c = C.toUpper $ T.last s
-                in if C.isLetter c then T.singleton c else ""
+    takeCup s = if T.null s then ""
+                else let c = C.toUpper $ T.last s
+                     in if C.isLetter c then T.singleton c else ""
 
 detailInfoProcessor :: AppContext -> ResultData -> IO ()
 detailInfoProcessor ctx (ResultData _ (RJson v)) = do
