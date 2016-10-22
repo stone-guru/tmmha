@@ -13,7 +13,7 @@ module TMM.Selector(
   searchText,
   evalSelect,
   initContext,
-  childCount
+  countChild
   )where
 
 import qualified Data.Text as T
@@ -162,151 +162,82 @@ context = Select $ \s -> (s, s)
 
 goto :: V.Vector Criterion -> Select Bool
 goto critv = Select $ \sc0 ->
-  let (found, sc1) = loop False sc0
-      sc2 =  if found then sc1 else sc0{_ccmap = _ccmap sc1}
-  in (found, sc2)
+  let (found, sc1) = loop sc0
+  in (found, if found then sc1 else sc0{_ccmap = _ccmap sc1})
   where
-    loop countOnly sc
+    loop :: Context -> (Bool, Context)
+    loop !sc
       | L.null $ _stack sc = (False, sc)
       | L.null $ _rest sc = (False, sc)
-      | otherwise = case step countOnly sc of
+      | otherwise = case step sc of
                       r@(True, _) -> r
-                      (False, sc') -> loop countOnly sc' -- trace (show sc') sc'
-  
-    step countOnly sc = 
-      let (t, sn):rest = _rest sc
-      in probe countOnly t sn sc{_rest = rest}
- 
-    probe countOnly t sn sc
-      | isTagOpen t =
-          let (found, mcs, ccmap) = if countOnly
-                                    then (False, [], _ccmap sc)
-                                    else moving t sn sc
-              stack = (t, sn, 1 + _nc sc) : _stack sc
-          in --trace (show found ++ ", " ++ show stack ++ "\n" ++ show mcs)
-            (found, sc{_stack = stack, _nc = 0, _mcs = mcs, _ccmap = ccmap})
- 
-      | isTagClose t = 
-          let (t1, sn1, nc1):stack = _stack sc
-              nc = _nc sc
-              ccmap = IntMap.insert sn1 nc $ _ccmap sc
-              mcs = if countOnly then [] else moveout $ _mcs sc
-          in (False, sc{_ccmap = ccmap, _nc = nc1, _stack = stack, _mcs = mcs})
-
-      | otherwise = (False, sc)
-
-    moving :: Textag -> Int -> Context -> (Bool, [MatchCandi], IntMap Int)
-    moving t sn sc
-      | V.length critv == 0 = (True, [], _ccmap sc)
-      | otherwise = case extPath (_mcs sc) of
-                      (True, b, mcs) -> (b, mcs, _ccmap sc)
-                      (False, _, _) -> let s0:_ = _stack sc
-                                           rest = (t,sn):_rest sc
-                                           (False, sc') = loop True sc{_stack = [s0], _rest = rest}
-                                       in  moving t sn sc{_ccmap = _ccmap sc'}
+                      (False, sc') -> loop sc' -- trace (show sc') sc'
       where
-        extPath mcs = let i = (1 + _nc sc)
-                          (_, psn, _) = head $ _stack sc
-                      in L.foldr (eachPath i psn) (True, False, []) $ [-1]:mcs
-        eachPath _ _ _ (False, _,  _) = (False, False, [])
-        eachPath i psn mc@(c:_) (True, b, r) =
-          case critMatch' t sn i psn (_ccmap sc) (critv V.! (c + 1)) of
-            Just True ->  let found = c == V.length critv - 2
-                          in (True, found,
-                               case (found, c) of
-                                 (True, -1) -> r
-                                 (True, _) -> (c:mc):r
-                                 (False, -1) -> [0]:r
-                                 (False, _) -> ((c +1):mc):(c:mc):r
-                             )
-            Just False -> (True, b,
-                            if c == -1 then r else (c:mc):r)
-            Nothing -> (False, False, [])
+        step sc = 
+          let (t, sn):rest = _rest sc
+          in probe t sn sc{_rest = rest}
+    
+        probe t sn sc
+          | isTagOpen t =
+            let (found, mcs, ccmap) = moving critv t sn sc
+                stack = (t, sn, 1 + _nc sc) : _stack sc
+            in --trace (show found ++ ", " ++ show stack ++ "\n" ++ show mcs)
+              (found, sc{_stack = stack, _nc = 0, _mcs = mcs, _ccmap = ccmap})
+      
+          | isTagClose t = 
+            let (t1, sn1, nc1):stack = _stack sc
+                nc = _nc sc
+                ccmap = IntMap.insert sn1 nc $ _ccmap sc
+                mcs = moveout $ _mcs sc
+            in (False, sc{_ccmap = ccmap, _nc = nc1, _stack = stack, _mcs = mcs})
+    
+          | otherwise = (False, sc)
 
-    moveout :: [MatchCandi] -> [MatchCandi]
-    moveout = L.foldr (\cp r -> case cp of [_] -> r; _:tx -> tx:r) []
-
-
-unless' :: Select Bool -> Select Bool -> Select Bool
-unless' p q = do
-  b <- p
-  if b
-    then return False
-    else q
-
-when' :: Select Bool -> Select Bool -> Select Bool
-when' p q = do
-  b <- p
-  if b
-    then q
-    else return False
-
-seek :: [Criterion] -> Context -> (Bool, Context)
-seek critx (Context stack rest nc mc ccmap) =
-  -- trace (show stack ++ ", " ++ show (take 5 rest)) $
-  (found, Context stack' rest' nc' mc ccmap')
+{-# INLINE moving #-}
+moving :: V.Vector Criterion -> Textag -> Int -> Context -> (Bool, [MatchCandi], IntMap Int)
+moving critv t sn sc
+  | V.length critv == 0 = (True, [], _ccmap sc)
+  | otherwise = case extPath (_mcs sc) of
+                  (True, b, mcs) -> (b, mcs, _ccmap sc)
+                  (False, _, _) ->
+                    let ccmap = countChild (_stack sc) ((t, sn):_rest sc) (_nc sc) (_ccmap sc)
+                    in  moving critv t sn sc{_ccmap = ccmap}
   where
-    (found, stack', nc', rest', ccmap') = search stack nc rest ccmap
+    extPath mcs = let i = (1 + _nc sc)
+                      (_, psn, _):_ = _stack sc
+                  in L.foldr (eachPath i psn) (True, False, []) $ [-1]:mcs
+    eachPath _ _ _ (False, _,  _) = (False, False, [])
+    eachPath i psn mc@(c:_) (True, b, r) =
+      case critMatch t sn i psn (_ccmap sc) (critv V.! (c + 1)) of
+        Just True ->  let found = c == V.length critv - 2
+                      in (True, found,
+                           case (found, c) of
+                             (True, -1) -> r
+                             (True, _) -> (c:mc):r
+                             (False, -1) -> [0]:r
+                             (False, _) -> ((c +1):mc):(c:mc):r
+                         )
+        Just False -> (True, b,
+                        if c == -1 then r else (c:mc):r)
+        Nothing -> (False, False, [])
+  
+{-# INLINE moveout #-}
+moveout :: [MatchCandi] -> [MatchCandi]
+moveout = L.foldr (\cp r -> case cp of [_] -> r; _:tx -> tx:r) []
 
-    search [] _ _ ccm = (False, stack, nc, rest, ccm) -- stack empty, means not found within current sub tree
-    search _ _ [] ccm = (False, stack, nc, rest, ccm) -- no more nodes
-    search !stack i ((a, sn):ax) ccm
-      | isTagOpen a, stack' <- (a, sn, i + 1):stack =
-          case  pathMatch critx stack' of
-            True -> (True, stack', 0, ax, ccm)
-            False -> search stack' 0  ax ccm
-
-      | isTagClose a, (tag1, sn1, nc1):sx <- stack =
-          search sx nc1 ax $ IntMap.insert sn1 i ccm
-
-      | otherwise = search stack i ax ccm
-
-pathMatch :: [Criterion] -> [(Textag, Int, Int)] -> Bool
-pathMatch [] _ = True -- empty conditon means match any node
-pathMatch (c:cx) ((a, _, i):ax)
-  | critMatch a i c = lookupper cx ax
-  | otherwise =  False
+countChild :: TagStack -> TagList -> Int -> IntMap Int -> IntMap Int
+countChild (s1@(tag, sn, i):_) rest nc countMap =
+  loop [(tag, sn, i)] rest nc countMap
   where
-    lookupper [] _ = True  -- all condition matchs
-    lookupper _ [] = False
-    lookupper (c:cx) !ax  = case dropWhile (\(a, _, i) -> not $! critMatch a i c) ax of
-                              [] -> False
-                              _:rest -> case lookupper cx rest of
-                                          True -> True
-                                          False -> lookupper (c:cx) rest
+    loop [] _ _ cm = cm
+    loop _ [] _ _ = error "childCount: empty rest tags, tags are not enough"
+    loop (s:sx) ((tag, sn):ax) nc cm
+      |isTagOpen tag = loop ((tag, sn, nc + 1):s:sx) ax 0 cm
 
--- probe :: Vector Criterion -> [CandidatePath] -> Textag -> Int -> (Bool, [CandidatePath])
--- probe ctx cpx t i = loop cpx False []
---   where
---     loop [] b rx = if match t i (ctx // 0)
---                    then (b || V.length ctx == 1, [0]:rx)
---                    else (b, rx)
---     loop (cp:cpx) b rx | c:_ <-  cp = let bnext = c < V.length - 1 && match t i (ctx // (c + 1))
---                                           rx' =  case bnext of
---                                             True -> ((c+1):cp):(c:cp):rx
---                                             False -> (c:cp):rx
---                                        in loop cpx (b || c + 2 == V.length) rx'
+      |isTagClose tag, (tag1, sn1, n1) <- s =
+         loop sx ax n1 $ IntMap.insert sn1 nc cm
 
--- pathMatch2 :: [Criterion] -> [(Textag, Int, Int)] -> Either [[(Int, Int -> Bool)]] Bool
--- pathMatch2 _ []  = True
--- pathMatch2 (b:bx) ((a, sn, i):ax) = case critMatch a i b of
---                                      CritMath -> lookupper bx ax []
---                                      NeedParentCc p -> lookupper bx ax [(sn, p)]
---                                      CritNotMatch -> Right False
---   where
---     lookupper [] _ [] = Right True
---     lookupper [] _ px = Left px
---     lookupper _ [] _ = Right False
---     lookupper (b:bx) !ax  px = case loop b ax of
---       Right (True, rest) -> lookupper bx rest px
---       Right (False, _) -> Right False
---       Left [(p, rest)] -> lookupper bx rest (p:px)
-
---     loop _ [] px = (Right False, [])
---     loop c ((a,sn,i):ax) = case critMatch' a i c of
---                            CritMath -> (Right True, ax)
---                            NeedParentCc p -> (Left (sn, p), ax)
---                            CritNotMatch -> m1 c ax
+      |otherwise = loop (s:sx) ax nc cm
 
 restrict :: Select ()
 restrict = Select $ \sc ->
@@ -334,36 +265,14 @@ bodyText (t:tx) = T.concat $! loop [t] tx
       |isTagClose t = loop sx tx
       |otherwise = loop (s:sx) tx
 
-critMatch :: Textag -> Int -> Criterion -> Bool
-critMatch t i (Criterion entCrit adCrit) = tagMatch t entCrit && adMatch adCrit i
-  where
-    tagMatch :: Textag -> EntCrit -> Bool
-    tagMatch (TagOpen ts _ ) (EName ns)  = ns == ts -- trace "#tagOpen-name" $
-    tagMatch (TagOpen _ attrs) (EId ids) =  -- trace "#tagOpen-id" $
-      case lookup "id"  attrs of
-        Nothing -> False
-        Just s -> s == ids
-    tagMatch (TagOpen _ attrs) (CName cs) = -- trace "#tagOpen-class" $
-      case lookup "class" attrs of
-        Nothing -> False
-        Just s -> cs `elem` T.words s
-    tagMatch _ _ = False
-
-    adMatch :: AdCrit -> Int -> Bool
-    adMatch AdNone _ = True
-    adMatch FirstChild i = i == 1
-    adMatch LastChild _ = True  -- outter function handle this
-    adMatch (NthChild n) i = i == n
-
-
-critMatch' :: Textag -> -- ^ Tag to be compare
-              Int ->    -- ^ Serial Number of this tag
-              Int ->    -- ^ Order number in its parent
-              Int ->    -- ^ Serial Number of its parent tag
-              IntMap Int -> -- ^ Child tag count map
-              Criterion ->  -- ^ Condition express
-              Maybe Bool    -- ^ Just bool is result, nothing means its parent count not in map
-critMatch' t sn i psn ccm (Criterion entCrit adCrit) =
+critMatch :: Textag -> -- ^ Tag to be compare
+             Int ->    -- ^ Serial Number of this tag
+             Int ->    -- ^ Order number in its parent
+             Int ->    -- ^ Serial Number of its parent tag
+             IntMap Int -> -- ^ Child tag count map
+             Criterion ->  -- ^ Condition express
+             Maybe Bool    -- ^ Just bool is result, nothing means its parent count not in map
+critMatch t sn i psn ccm (Criterion entCrit adCrit) =
   if tagMatch t entCrit
   then adMatch adCrit i
   else Just False
@@ -411,41 +320,6 @@ parseCrit s = map f $ T.words s
                                                             other -> wrong $ show other
       | otherwise = wrong $ T.unpack ads
     wrong reason = error $ "unrecongnized tag selector " ++ reason
-
-
-childCount :: [(Textag, Int, Int)] -> [(Textag, Int)] -> Int -> IntMap Int -> (Int, IntMap Int)
-childCount (s1@(tag, sn, i):_) rest nc countMap = -- nc means visited child node count of top stack tag
-  case IntMap.lookup sn countMap of
-    Just v -> (v, countMap)
-    Nothing -> loop [(tag, sn, i)] rest nc countMap
-  where
-    loop [] _ _ cm = case IntMap.lookup sn cm of
-                           Just v -> (v, cm)
-                           Nothing -> error $ "childCount: root of subtree not in map, " ++ show (tag, sn, i)
-
-    loop _ [] _ _ = error "childCount: empty rest tags, tags are not enough"
-
-    loop (s:sx) ((tag, sn):ax) nc cm
-      |isTagOpen tag = loop ((tag, sn, nc + 1):s:sx) ax 0 cm
-
-      |isTagClose tag, (tag1, sn1, n1) <- s =
-         loop sx ax n1 $ IntMap.insert sn1 nc cm
-
-      |otherwise = loop (s:sx) ax nc cm
-
--- type Stack sa = [(Textag, Int, (Int, sa))]
--- type TagList ta = [(Textag, Int, ta)]
-
--- travel :: Stack sa -> TagList ta -> Int -> st -> (Stack sa, TagList ta, Int, st)
--- travel stack rest nc st = loop stack rest nc st
---   where
---     loop [] rest nc st = ([], rest, nc, st)
---     loop stack [] nc st = (stack, [], nc, st)
---     loop (s:sx) ((tag, sa):ax) nc st
---       | isTagOpen tag = loop
---       | otherwise = let (tag, st):ax rest
---                     in isTagOpen
-
 
 first :: (a, b, c) -> a
 first (a, _, _) = a

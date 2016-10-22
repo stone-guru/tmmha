@@ -27,6 +27,8 @@ import Debug.Trace
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
 
+allTests = TestList [testAt, p20Tests, testNths, testLasts]
+
 testAt = TestCase ( do  (i, n) <- runP20Sel nameAndId
                         T.putStrLn i
                         T.putStrLn n
@@ -116,6 +118,8 @@ testNthLast1 = TestLabel "nth last test 1" $
       assertEqual "li13 text" "item 3" s
   )
 
+testLasts = TestList [testLast1, testLast2, testLast3, testLast4, testNthLast1]
+  
 html2Test sel = let ctx = initContext $ parseTags html2
                 in evalSelect sel ctx
   where
@@ -137,7 +141,7 @@ html2Test sel = let ctx = initContext $ parseTags html2
       , "</div>" --div0
       ]
 
-nthTests = TestList [testNth1, testNth2, testNth3, testNth4]
+testNths = TestList [testNth1, testNth2, testNth3, testNth4]
 
 page20 = "/home/bison/sources/haskell/tmmha/test/data/list-page-20.html"
 
