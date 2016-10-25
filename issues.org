@@ -7,12 +7,16 @@
 *** image format detect
     detect image format from reponsed bytestring instead of url file extension.
 *** DONE add nth selector support in Selector module
-*** restrict node search range within its parent
+*** DONE add reverse order nth selector support in Selector module
+*** DONE restrict node search range within its parent
     for example, in this statement (at ".level1 .level2" $ textOf "span"), searching of span tag must
 be in the branch of .level2. if go out of .level2, search should fail.
-
+*** DONE provide textAfter function
+    textAfter function can get text content after a certain node
+** TODO support cookies to continue Douban books
+   Douban have detected it's a spider and bang it
 ** bugs
 *** DONE process function error cause whole loop stoped
  exception from injected function within bracket cause loop stoped.
 ** Optimazation
-*** Use GHC Rules at "map (textTag b2t) $ F.parseTags bytes"
+*** TODO Use GHC Rules at "map (textTag b2t) $ F.parseTags bytes"

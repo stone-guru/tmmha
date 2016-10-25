@@ -6,7 +6,7 @@ module SelectorTest where
 import Test.HUnit
 
 import TMM.Types
-import TMM.Selector2
+import TMM.Selector
 
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -162,20 +162,20 @@ parseFile fn = do
   cxt <- T.readFile fn
   return $ parseTags cxt
 
-childCountTest1 = TestLabel "childCount1" $
-  (TestCase $ do
-      let tags = parseTags ccHtml1
-          tagsn@((t1, sn1):rest) = zip tags [1..]
-      let (v, cm) = childCount [(t1, sn1, 1)] rest 0 IntMap.empty
-      -- putStrLn $ IntMap.showTree cm
-      assertEqual "div1" 2 (cm IntMap.! 1)
-      assertEqual "div11" 2 (cm IntMap.! 2)
-      assertEqual "ul1" 4 (cm IntMap.! 3)
-      assertEqual "li11" 0 (cm IntMap.! 4)
-      assertEqual "a href" 1 (cm IntMap.! 21)
-      --mapM_ (putStrLn . show ) $ map (\(t, sn) -> (t, sn, IntMap.findWithDefault 0 sn cm)) tagsn
-      assertBool "tag text should not record" $ IntMap.notMember 18 cm
-      )
+-- childCountTest1 = TestLabel "childCount1" $
+--   (TestCase $ do
+--       let tags = parseTags ccHtml1
+--           tagsn@((t1, sn1):rest) = zip tags [1..]
+--       let (v, cm) = childCount [(t1, sn1, 1)] rest 0 IntMap.empty
+--       -- putStrLn $ IntMap.showTree cm
+--       assertEqual "div1" 2 (cm IntMap.! 1)
+--       assertEqual "div11" 2 (cm IntMap.! 2)
+--       assertEqual "ul1" 4 (cm IntMap.! 3)
+--       assertEqual "li11" 0 (cm IntMap.! 4)
+--       assertEqual "a href" 1 (cm IntMap.! 21)
+--       --mapM_ (putStrLn . show ) $ map (\(t, sn) -> (t, sn, IntMap.findWithDefault 0 sn cm)) tagsn
+--       assertBool "tag text should not record" $ IntMap.notMember 18 cm
+--       )
 
 ccHtml1 = T.concat [
   "<div id=\"div1\">"
@@ -192,3 +192,26 @@ ccHtml1 = T.concat [
   , "</div>"
   ]
                      
+
+book6958 = "/home/bison/sources/haskell/tmmha/test2/data/book26596958.html"
+
+bookParserTest :: FilePath -> IO Value
+bookParserTest fn = do
+  tags <- parseFile fn 
+  trace "bookPageParser run" $ 
+    return (runSelector tags selector)
+  where
+    selector = at "#wrapper" $ do
+      name <- textOf "h1 span"
+      author <- trim <$> textOf "#info span:nth-child(1) a"
+      publisher <- trim <$> textAfter "#info span[text|='出版社']"
+      totalPage <- trim <$> textAfter "#info span[text|='页数']"
+      price <- trim <$> textAfter "#info span[text|='定价']"
+      rating <- trim <$> textOf ".rating_num"
+      return $ object [ "name" .= name
+                      , "author" .= author
+                      , "publisher" .= publisher
+                      , "totalPage" .= totalPage
+                      , "price" .= price
+                      , "rating" .= rating
+                      ]
