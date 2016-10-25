@@ -46,7 +46,7 @@ main = do
   sum <- S.executeAction config (urls ipg npg)
   verbose sum
   where
-    urls i n = map (\i -> (pageUrl i,  "list")) [i..(i + n -1)]
+    urls i n = map (\i -> (pageUrl i, M.empty, "list")) [i..(i + n -1)]
     initConfig = do
       ctx <- initAppContext
       return S.defaultConfig { S._cParsers = parsers

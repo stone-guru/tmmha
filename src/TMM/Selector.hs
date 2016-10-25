@@ -8,29 +8,37 @@ module TMM.Selector(
   at,
   many,
   textOf,
+  textAfter,
   attrOf,
   runSelector,
   searchText,
   evalSelect,
   initContext,
-  countChild
+  countChild,
+  t2i,
+  t2f,
+  trim
   )where
-
+import Data.Text(Text)
 import qualified Data.Text as T
 import qualified Data.Text.Read as T
-import Data.Text(Text)
+import qualified Data.Text.Read as T
+import qualified Data.Text.ICU.Convert as ICU  -- text-icu
+  
 import Text.HTML.TagSoup
 import qualified Text.HTML.TagSoup.Fast as F
+  
+import Control.Monad
 import Control.Exception
-import Data.Maybe
 import Debug.Trace
+  
 import qualified Data.ByteString.Char8 as B8
-import qualified Data.Text.ICU.Convert as ICU  -- text-icu
 import Text.Regex.TDFA
 import Text.Regex.TDFA.Text
+  
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
-import Control.Monad
+import Data.Maybe
 import qualified Data.List as L
 import qualified Data.Vector as V
 
@@ -46,6 +54,8 @@ data AdCrit = AdNone             -- ^ No addon condition
             | LastChild          -- ^ Last child of its parent
             | NthChild Int       -- ^ Nth child of its parent
             | NthLastChild Int   -- ^ Reverse order nth child of its parent
+            | TypeIs Text        -- ^ has a Type attribute and value is this text
+            | TextStartWith Text
             deriving (Eq, Show)
 
 type Textag = Tag Text
@@ -121,7 +131,7 @@ many s p = stay $ loop []
           loop (x:rx)
 
 root :: Select Textag
-root = fmap (first.head) $ cget _stack
+root = (first.head) <$> cget _stack
 
 nodes :: Select [Textag]
 nodes = do
@@ -135,6 +145,15 @@ path = fmap (map first) (cget _stack)
 textOf :: Text -> Select Text
 textOf crit = at crit $ fmap bodyText nodes
 
+textAfter :: Text -> Select Text
+textAfter crit = at crit $ Select $ \sc ->
+  let s0 = first $ head $ _stack sc
+      (t, _):ax = skipNode s0 (_rest sc)
+  in case t of
+    TagText s -> (s, sc)
+    _ -> ("", sc)
+  
+
 attrOf :: Text -> Text -> Select Text
 attrOf crit name = at crit $ fmap (fromAttrib name) root
 
@@ -144,12 +163,34 @@ searchText crit pat = do
   let (_, _, _, r) = s =~ pat :: (Text, Text, Text, [Text])
   return r
 
+t2i :: Text -> Int
+t2i txt = case T.decimal txt of
+            Right (i, _) -> i
+            Left msg -> 0
+
+t2f :: Text -> Float
+t2f txt = case T.double txt of
+            Right (x, _) -> realToFrac x
+            Left msg -> 0.0
+
+trim :: Text -> Text
+trim = T.dropAround spaces
+  where
+    spaces ' ' = True
+    spaces '\n' = True
+    spaces '\r' = True
+    spaces '\t' = True
+    spaces _ = False
+ 
 initContext :: [Textag] -> Context
 initContext tx = Context [(beginTag, 1, 1)] (zip (regular tx) [2..]) 0 [] IntMap.empty
   where
     beginTag = TagOpen "//" []
-    regular [] = TagClose "//" : []
-    regular (a:ax) = a : (regular ax)
+    regular [] = [TagClose "//"]
+    regular ((TagOpen "br" _):tx) = regular tx
+    regular ((TagClose "br"):tx) = regular tx
+    regular ((TagComment _):tx) = regular tx
+    regular (t:tx) = t : regular tx
 
 cget :: (Context -> a) -> Select a
 cget f = Select $ \sc -> (f sc, sc)
@@ -172,28 +213,24 @@ goto critv = Select $ \sc0 ->
       | otherwise = case step sc of
                       r@(True, _) -> r
                       (False, sc') -> loop sc' -- trace (show sc') sc'
-      where
-        step sc = 
-          let (t, sn):rest = _rest sc
-          in probe t sn sc{_rest = rest}
+  
+    step sc = let (t, sn):rest = _rest sc
+              in  probe t sn sc{_rest = rest}
     
-        probe t sn sc
-          | isTagOpen t =
-            let (found, mcs, ccmap) = moving critv t sn sc
-                stack = (t, sn, 1 + _nc sc) : _stack sc
-            in --trace (show found ++ ", " ++ show stack ++ "\n" ++ show mcs)
-              (found, sc{_stack = stack, _nc = 0, _mcs = mcs, _ccmap = ccmap})
-      
-          | isTagClose t = 
-            let (t1, sn1, nc1):stack = _stack sc
-                nc = _nc sc
-                ccmap = IntMap.insert sn1 nc $ _ccmap sc
-                mcs = moveout $ _mcs sc
-            in (False, sc{_ccmap = ccmap, _nc = nc1, _stack = stack, _mcs = mcs})
-    
-          | otherwise = (False, sc)
+    probe t@(TagOpen _ _) sn sc =
+      let (found, mcs, ccmap) = moving critv t sn sc
+          stack = (t, sn, 1 + _nc sc) : _stack sc
+      in (found, sc{_stack = stack, _nc = 0, _mcs = mcs, _ccmap = ccmap})
 
-{-# INLINE moving #-}
+    probe t@(TagClose _) sn sc =
+      let (t1, sn1, nc1):stack = _stack sc
+          nc = _nc sc
+          ccmap = IntMap.insert sn1 nc $ _ccmap sc
+          mcs = moveout $ _mcs sc
+      in (False, sc{_ccmap = ccmap, _nc = nc1, _stack = stack, _mcs = mcs})
+    
+    probe _ _ sc = (False, sc)
+ 
 moving :: V.Vector Criterion -> Textag -> Int -> Context -> (Bool, [MatchCandi], IntMap Int)
 moving critv t sn sc
   | V.length critv == 0 = (True, [], _ccmap sc)
@@ -205,10 +242,13 @@ moving critv t sn sc
   where
     extPath mcs = let i = (1 + _nc sc)
                       (_, psn, _):_ = _stack sc
-                  in L.foldr (eachPath i psn) (True, False, []) $ [-1]:mcs
-    eachPath _ _ _ (False, _,  _) = (False, False, [])
-    eachPath i psn mc@(c:_) (True, b, r) =
-      case critMatch t sn i psn (_ccmap sc) (critv V.! (c + 1)) of
+                      nt = if null (_rest sc)
+                           then Nothing
+                           else (Just . fst . head . _rest) sc
+                  in L.foldr (eachPath i psn nt) (True, False, []) $ [-1]:mcs
+    eachPath _ _ _ _  (False, _,  _) = (False, False, [])
+    eachPath i psn nt mc@(c:_) (True, b, r) =
+      case critMatch t sn i psn nt (_ccmap sc) (critv V.! (c + 1)) of
         Just True ->  let found = c == V.length critv - 2
                       in (True, found,
                            case (found, c) of
@@ -226,22 +266,19 @@ moveout :: [MatchCandi] -> [MatchCandi]
 moveout = L.foldr (\cp r -> case cp of [_] -> r; _:tx -> tx:r) []
 
 countChild :: TagStack -> TagList -> Int -> IntMap Int -> IntMap Int
-countChild (s1@(tag, sn, i):_) rest nc countMap =
-  loop [(tag, sn, i)] rest nc countMap
+countChild ((tag, sn, i):_) = loop [(tag, sn, i)] 
   where
     loop [] _ _ cm = cm
     loop _ [] _ _ = error "childCount: empty rest tags, tags are not enough"
-    loop (s:sx) ((tag, sn):ax) nc cm
+    loop (s:sx) ((tag, sn):ax) nc cm 
       |isTagOpen tag = loop ((tag, sn, nc + 1):s:sx) ax 0 cm
-
-      |isTagClose tag, (tag1, sn1, n1) <- s =
-         loop sx ax n1 $ IntMap.insert sn1 nc cm
-
+      |isTagClose tag, (tag1, sn1, n1) <- s = let cm' = IntMap.alter (\v_ -> if isJust v_ then v_ else Just nc) sn1 cm
+                                              in loop sx ax n1 cm'
       |otherwise = loop (s:sx) ax nc cm
 
 restrict :: Select ()
 restrict = Select $ \sc ->
-  let stack  = case  _stack sc of
+  let stack  = case _stack sc of
                  s:_ -> [s]
                  [] -> []
   in  ((), sc{_stack = stack, _mcs = []})
@@ -265,16 +302,28 @@ bodyText (t:tx) = T.concat $! loop [t] tx
       |isTagClose t = loop sx tx
       |otherwise = loop (s:sx) tx
 
+skipNode :: Textag -> TagList-> TagList
+skipNode (TagClose _) _ = error "top tag in stack should not be tagclose"
+skipNode t rest = loop [t] rest
+  where
+    loop [] ax = ax
+    loop _ [] = error "tags exhausted"
+    loop sx ((t@(TagOpen _ _), _):tx) = loop (t:sx) tx
+    loop (s:sx) ((TagClose _, _):tx) = loop sx tx
+    loop sx (_:tx) = loop sx tx
+    
+
 critMatch :: Textag -> -- ^ Tag to be compare
              Int ->    -- ^ Serial Number of this tag
              Int ->    -- ^ Order number in its parent
              Int ->    -- ^ Serial Number of its parent tag
+             Maybe Textag ->
              IntMap Int -> -- ^ Child tag count map
              Criterion ->  -- ^ Condition express
              Maybe Bool    -- ^ Just bool is result, nothing means its parent count not in map
-critMatch t sn i psn ccm (Criterion entCrit adCrit) =
+critMatch t sn i psn nt ccm (Criterion entCrit adCrit) =
   if tagMatch t entCrit
-  then adMatch adCrit i
+  then adMatch adCrit t i nt
   else Just False
   where
     tagMatch :: Textag -> EntCrit -> Bool
@@ -288,14 +337,20 @@ critMatch t sn i psn ccm (Criterion entCrit adCrit) =
         Nothing -> False
         Just s -> cs `elem` T.words s
     tagMatch _ _ = False
-
-    adMatch :: AdCrit -> Int -> Maybe Bool
-    adMatch AdNone _ = Just True
-    adMatch FirstChild i = Just $! i == 1
-    adMatch LastChild _ = requireParentcc psn i
-    adMatch (NthChild n) i = Just $! i == n
-    adMatch (NthLastChild n) i = requireParentcc psn (n + i - 1)
-    
+  
+    adMatch :: AdCrit -> Textag -> Int -> Maybe Textag -> Maybe Bool
+    adMatch AdNone _ _ _ = Just True
+    adMatch FirstChild _ i _= Just $! i == 1
+    adMatch LastChild _ _ _ = requireParentcc psn i
+    adMatch (NthChild n) _ i _ = Just $! i == n
+    adMatch (NthLastChild n) _ i _ = requireParentcc psn (n + i - 1)
+    adMatch (TypeIs t) (TagOpen _ attrs) _ _ = case lookup "type" attrs of
+                                                 Nothing -> Just False
+                                                 Just s -> Just $! s == t
+    adMatch (TextStartWith s1) _ _ Nothing  = Just False
+    adMatch (TextStartWith s1) _ _ (Just (TagText s2)) = Just $ T.isPrefixOf s1 (T.stripStart s2)
+    adMatch _ _ _ _ = Just False
+                                 
     requireParentcc sn i = do
       cc <- IntMap.lookup sn ccm
       return $ i == cc
@@ -306,8 +361,13 @@ parseCrit s = map f $ T.words s
     f st = case T.head st of
              '.' -> crit CName (T.tail st)
              '#' -> crit EId (T.tail st)
+             ':' -> inputCrit (T.tail st)
              _ -> crit EName st
-    crit cf s | (s1, s2) <- T.breakOn ":" s = Criterion (cf s1) (adcrit s2)
+    crit cf s | (s1, s2) <- break s = Criterion (cf s1) (adcrit s2)
+
+    break s = L.foldr breakf (s, "") ["[", ":"]
+    breakf d (s1, s2) = if s2 == "" then T.breakOn d s1 else (s1, s2)
+  
     adcrit "" = AdNone
     adcrit ads
       | ads == ":first-child" = FirstChild
@@ -318,7 +378,15 @@ parseCrit s = map f $ T.words s
       | Just s <- T.stripPrefix ":nth-last-child(" ads =  case T.decimal s of
                                                             Right (i, ")") -> NthLastChild i
                                                             other -> wrong $ show other
+      | Just s <- T.stripPrefix "[text|='" ads = case T.stripSuffix "']" s of
+                                                   Just t -> TextStartWith $ trim t
+                                                   other -> wrong $ show ads
+      
       | otherwise = wrong $ T.unpack ads
+      
+    inputCrit "input" = Criterion (CName "input") AdNone
+    inputCrit s  =  Criterion (CName "input") (TypeIs s)
+    
     wrong reason = error $ "unrecongnized tag selector " ++ reason
 
 first :: (a, b, c) -> a

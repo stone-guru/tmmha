@@ -2,6 +2,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE ExistentialQuantification #-}
 module TMM.Types where
 
 import Control.Concurrent.Chan (Chan)
@@ -13,10 +14,19 @@ import Control.DeepSeq
 import Text.HTML.TagSoup (Tag)
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
+import Data.Typeable
 
 type TextTag = Tag Text
 type Meta = HashMap Text Text
-  
+
+-- encap :: Typeable a => a -> SData
+-- encap a = SData a
+
+-- uncap :: Typeable a => SData -> a
+-- uncap (SData x) = case cast x of
+--   Just x -> x
+--   _ -> error "cannot convert "
+
 data TaskDesc = TaskDesc { _tdUrl :: !Text
                          , _tdMeta :: !Meta
                          , _tdHandler :: !Text
@@ -30,14 +40,19 @@ data OriginEnt = OBinary !ByteString
 data YieldEnt = YBinary !ByteString
                | YText  !Text
                | YJson !Value
+               | forall x. (NFData x, Typeable x) => YData !x
                | YUrl  !TaskDesc
-               deriving(Show)
-               
+
+instance Show YieldEnt where
+  show y = "TODO"
+
 data ResultEnt = RBinary !ByteString
                | RText !Text
                | RJson !Value
-               deriving(Show)
-
+               | forall x. (NFData x, Typeable x) => RData !x
+instance Show ResultEnt where
+  show y = "TODO"
+ 
 data DataFormat = RawBinary | UtfText | Tags deriving(Show)
 
 
@@ -59,7 +74,7 @@ data ResultData = ResultData{ _rdDesc :: !TaskDesc
 type ScraParser = SourceData -> IO [YieldData]
 type ScraProcessor = ResultData -> IO ()
 
-type StartsUrls = [(Text, Text)]
+type StartsUrls = [(Text, Meta, Text)]
 
 type ScraParserRec = (Text, ScraParser, DataFormat)
 type ScraProcessorRec = (Text, ScraProcessor)
@@ -110,10 +125,20 @@ yieldUrl od url meta hn = YieldData (taskDesc od) (YUrl $ TaskDesc url meta hn)
 yieldUrl' :: SourceData -> Text -> Text -> YieldData
 yieldUrl' od url hn = YieldData (taskDesc od) (YUrl $ TaskDesc url empty hn)
 
+yieldData :: (NFData x, Typeable x) => SourceData -> x -> YieldData
+yieldData od x = YieldData (taskDesc od) (YData x)
+
 resultValue :: ResultData -> Value
 resultValue rd = case _rdEntity rd of
   RJson v -> v
   otherwise -> error "result data is not a value data"
+
+resultData :: (NFData x, Typeable x) => ResultData -> x
+resultData rd = case _rdEntity rd of
+  RData v -> case cast v of
+    Just x -> x
+    _ -> error "can not convert to taget data type"
+  _ -> error "result data is not a poly data"
   
 -- metaLookup:: Octopus a => a -> Text -> Maybe Text
 -- metaLookup a k = lookup k (metaOf a)

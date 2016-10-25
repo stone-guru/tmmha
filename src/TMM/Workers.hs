@@ -174,8 +174,8 @@ startSpider spider urls = do
   atomically $ mapM_  feedStartsUrl urls
   putMVar (_startFlag spider) True
   where
-    feedStartsUrl (url, parName) = writeTChan (_taskQueue spider) $
-                                        Right $ TaskData $ TaskDesc url  M.empty parName
+    feedStartsUrl (url, meta, parName) = writeTChan (_taskQueue spider) $
+                                        Right $ TaskData $ TaskDesc url meta parName
 
 waitStarted :: Spider -> IO ()
 waitStarted = void . readMVar . _startFlag
@@ -299,6 +299,7 @@ processRoute spider = mapChannel "process" (_logger spider) (_respQueue spider) 
     ye2re (YBinary b) = RBinary b
     ye2re (YText t) = RText t
     ye2re (YJson j) = RJson j
+    ye2re (YData x) = RData x
     ye2re _ = error "unhandled YieldData Type"
 
 transmitParser :: SourceData -> IO [YieldData]
@@ -334,10 +335,16 @@ askClose s = atomically $ void $ forM_  (replicate 24  (Left "finished")) (write
 waitClosed :: Spider -> IO ()
 waitClosed  =  void . takeMVar . _finishFlag
 
-mapChannel :: (NFData a, NFData b) =>  String -> Logger -> TChan (Either String a) -> PilotLight  ->
-              TChan (Either String b) -> (a -> IO [b]) -> IO ()
+mapChannel :: (NFData a, NFData b) =>
+              String ->                  -- ^ Route name
+              Logger ->                  -- ^ Logger
+              TChan (Either String a) -> -- ^ Event source channel
+              PilotLight  ->             -- ^ Show is this route running
+              TChan (Either String b) -> -- ^ Taget channel
+              (a -> IO [b]) ->           -- ^ Process function
+              IO ()                      -- ^ result void
 mapChannel routeName logger cha pla chb f =
-  repeatDo routeName $ bracket
+  repeatDo2 routeName 0 (return True) (return ()) $ bracket
   (do
       --putStrLn $ msg ++ " waiting next"
       atomically $ readTChan cha)
@@ -388,6 +395,23 @@ repeatDo msg f = do
   if not b
     then putStrLn $ msg ++ " closed"
     else repeatDo msg f
+
+repeatDo2 :: String -> Int -> IO Bool -> IO () -> IO Bool -> IO ()
+repeatDo2 name interval p q f =  loop >> end
+  where
+    loop = do
+      precondition <- p
+      when precondition $ do
+          continue <- f
+          if not continue
+            then return ()
+            else do
+              when (interval > 0) $ threadDelay (interval * 1000)
+              loop 
+    end = do
+      catch q (\ex -> let msg = show (ex :: SomeException)
+                      in putStrLn $ "exception when run " ++ name ++ " end action, " ++ msg )
+      putStrLn $ name ++ " end "
 
 b2s :: B.ByteString -> String
 b2s = map (toEnum . fromIntegral) . B.unpack
