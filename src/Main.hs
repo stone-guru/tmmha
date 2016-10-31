@@ -35,6 +35,12 @@ import qualified Filesystem.Path.CurrentOS  as FP
 import Database.PostgreSQL.Simple as DB
 import Control.Monad
 
+import Control.Concurrent.STM
+import Control.Concurrent.STM.TVar
+import Network.HTTP.Client
+import qualified Data.ByteString.Char8 as B8
+import qualified Data.ByteString.Lazy.Char8 as LB8
+
 data AppContext = AppContext { _dbConnection :: DB.Connection
                              , _stageNum :: Int
                              }
@@ -46,23 +52,32 @@ main = do
   sum <- S.executeAction config (urls ipg npg)
   verbose sum
   where
-    urls i n = map (\i -> (pageUrl i, M.empty, "list")) [i..(i + n -1)]
     initConfig = do
       ctx <- initAppContext
-      return S.defaultConfig { S._cParsers = parsers
-                             , S._cProcessors = processors ctx}
+      return S.defaultConfig {
+        S._cParsers = [ ("list", listPageParser, Tags)
+                      , ("detail", detailPageParser, Tags)
+                      , ("photo" , photoPageParser, UtfText)
+                      , ("image" , S.transmitParser, RawBinary)],
+        S._cProcessors = [ ("detail", detailInfoProcessor ctx)
+                         , ("image", imageProcessor)]
+        }
+        
     parseArgs (a:b:_) = (read a::Int, read b::Int)
-    parsers = [ ("list", listPageParser, Tags)
-              , ("detail", detailPageParser, Tags)
-              , ("photo" , photoPageParser, UtfText)
-              , ("image" , S.transmitParser, RawBinary)]
-    processors ctx = [ ("detail", detailInfoProcessor ctx) --valueProcessor
-                     , ("image", imageProcessor)]
+  
+    urls i n = map (\i -> (pageUrl i, M.empty, "list")) [i..(i + n -1)]
+
     toM :: Int -> Double
     toM x = fromIntegral x / (1024 * 1024)
 
-    verbose sum = putStrLn $ printf "download: resources %d, total %.3f MB"
-                     (S._sDownloadCount sum) (toM $ S._sDownloadBytes sum)
+    verbose sum = do
+      putStrLn $ printf "Download: resources %d, total %.3f MB"
+        (S._sDownloadCount sum) (toM $ S._sDownloadBytes sum)
+      putStrLn $ "Parser statistics"
+      mapM (putStrLn . ("  " ++) . show) (S._sParExecStat sum)
+      putStrLn $ "Processor statistics"
+      mapM (putStrLn . ("  " ++) . show) (S._sPrcExecStat sum)
+
 
 initAppContext :: IO AppContext
 initAppContext = do
@@ -96,17 +111,6 @@ listPageParser  od  = trace "listPageParser run" $ do
       let meta = M.fromList [ ("uid", uid), ("name", name), ("age", age)]
       return [ yieldUrl  od (detailPageUrl uid) meta "detail"
              , yieldUrl od (T.append "https:" url) meta "photo"]
-
-t2i :: Text -> Int
-t2i txt = case T.decimal txt of
-            Right (i, _) -> i
-            Left msg -> 0
-
-t2f :: Text -> Float
-t2f txt = case T.double txt of
-            Right (x, _) -> realToFrac x
-            Left msg -> 0.0
-
 
 detailPageParser :: SourceData -> IO [YieldData]
 detailPageParser od = trace "detailPageParser run" $ 

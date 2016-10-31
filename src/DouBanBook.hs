@@ -101,8 +101,8 @@ bookPageParser od = do
     return [runSelector (originTags od) selector]
   where
     selector = do
-      bname <- at "#wrapper" $ textOf "h1 span"
-      bf <- at "#info" $ Book bname  
+      bname <- goto "#wrapper" $ textOf "h1 span"
+      bf <- goto "#info" $ Book bname  
             <$> (trim <$> textOf "span:nth-child(1) a")
             <*> (trim <$> textAfter "span[text|='出版社']")
             <*> (trim <$> textAfter "span[text|='页数']")
@@ -117,19 +117,3 @@ bookInfoProcessor hd rd = do
       line = T.concat ["\"", s, "\""]
   T.hPutStrLn hd line >> hFlush hd
 
--- bookInfoProcessor :: Handle -> ResultData -> IO ()
--- bookInfoProcessor hd (ResultData _ (RJson v)) = do
---   print v
---   void $ case parse parser v of
---            Error s -> error s
---            Success line -> T.hPutStrLn hd line >> hFlush hd
---   where
---     parser = withObject "modelinfo" $ \o -> do
---       name :: Text <- o .: "name"
---       author :: Text <- o .: "author"
---       publisher :: Text <- o .: "publisher"
---       totalPage :: Text <- o .: "totalPage"
---       price :: Text <- o .: "price"
---       rating :: Text <- o .: "rating"
---       return $ let s = T.intercalate "\", \"" [name, author, publisher, totalPage, price, rating]
---                in T.concat ["\"", s, "\""]

@@ -1,4 +1,4 @@
--- -*- coding: utf-8 -*-
+-- -*- coding: utf-8 -*
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -6,6 +6,7 @@
 module TMM.Selector(
   Select(..),
   at,
+  goto,
   many,
   textOf,
   textAfter,
@@ -111,19 +112,32 @@ runSelector tags sel = evalSelect sel $ initContext tags
 evalSelect :: Select a -> Context -> a
 evalSelect s sc = fst (runSelect s sc)
 
-at :: Text -> Select a -> Select a
-at s p = stay $ do
-  found <- goto (V.fromList $ parseCrit s)
+goto_ ::  Text -> Select a -> Select (Maybe a)
+goto_ s p = do
+  found <- search (V.fromList $ parseCrit s)
   if found
-    then restrict >>  p
-    else error $ show s ++ " not found"
+    then fmap Just (stay $ restrict >>  p)
+    else return Nothing
+
+goto ::  Text -> Select a -> Select a
+goto s p = do
+  x_ <- goto_ s p
+  case x_ of
+    Just x -> return x
+    _ ->  error $ show s ++ " not found"
+  
+at :: Text -> Select a -> Select a
+at s p = stay $ goto s p
+
+at_ :: Text -> Select a -> Select (Maybe a)
+at_ s p = stay $ goto_ s p
 
 many :: Text -> Select a -> Select [a]
 many s p = stay $ loop []
   where
     critx = V.fromList $ parseCrit s
     loop rx = do
-      b <- goto critx
+      b <- search critx
       if not b
         then return $ reverse rx
         else do
@@ -143,25 +157,35 @@ path :: Select [Textag]
 path = fmap (map first) (cget _stack)
 
 textOf :: Text -> Select Text
-textOf crit = at crit $ fmap bodyText nodes
+textOf crit = fromJust <$> textOf_ crit
+
+textOf_ :: Text -> Select (Maybe Text)
+textOf_ crit =  at_ crit $  bodyText <$> nodes 
 
 textAfter :: Text -> Select Text
-textAfter crit = at crit $ Select $ \sc ->
+textAfter crit = fromJust <$> textAfter_ crit
+
+textAfter_ :: Text -> Select (Maybe Text)
+textAfter_ crit = at_ crit $ Select $ \sc ->
   let s0 = first $ head $ _stack sc
       (t, _):ax = skipNode s0 (_rest sc)
   in case t of
     TagText s -> (s, sc)
     _ -> ("", sc)
-  
 
 attrOf :: Text -> Text -> Select Text
-attrOf crit name = at crit $ fmap (fromAttrib name) root
+attrOf crit name = fromJust <$> attrOf_ crit name
+
+attrOf_ :: Text -> Text -> Select (Maybe Text)
+attrOf_ crit name = at_ crit $ fmap (fromAttrib name) root
 
 searchText :: Text -> Text -> Select [Text]
 searchText crit pat = do
-  s <- textOf crit
-  let (_, _, _, r) = s =~ pat :: (Text, Text, Text, [Text])
-  return r
+  s_ <- textOf_ crit
+  case s_ of
+    Just s -> let (_, _, _, r) = s =~ pat :: (Text, Text, Text, [Text])
+              in return r
+    Nothing -> return []
 
 t2i :: Text -> Int
 t2i txt = case T.decimal txt of
@@ -201,8 +225,8 @@ cmodify f = Select $ \sc -> ((), f sc)
 context :: Select Context
 context = Select $ \s -> (s, s)
 
-goto :: V.Vector Criterion -> Select Bool
-goto critv = Select $ \sc0 ->
+search :: V.Vector Criterion -> Select Bool
+search critv = Select $ \sc0 ->
   let (found, sc1) = loop sc0
   in (found, if found then sc1 else sc0{_ccmap = _ccmap sc1})
   where
@@ -287,7 +311,8 @@ stay :: Select a -> Select a
 stay p = do
   sc <- context
   x <- p
-  cmodify $ const sc
+  ccmap <- _ccmap <$> context
+  cmodify $ const sc{_ccmap = ccmap}
   return x
 
 bodyText :: [Textag] -> Text

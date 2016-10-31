@@ -1,50 +1,152 @@
 -- -*- coding: utf-8 -*-
-{-# LANGUAGE OverloadedStrings, ScopedTypeVariables,BangPatterns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ExistentialQuantification #-}
+{-# LANGUAGE RankNTypes #-}
+
 module TMM.Downloader(
-  ResponseData(..),
-  Downloader,
-  newDownloader
+  CookieUpdater,
+  Downloader(..),
+  newDownloader,
+  download,
+  installCookieUpdater
   )
 where
+
+import TMM.Types
 
 import Network.HTTP.Client
 import Network.HTTP.Client.TLS
 import Network.HTTP.Types.Header
-import Control.Exception
+  
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as E
 import qualified Data.Text.ICU.Convert as ICU  -- text-icu
 import qualified Data.ByteString.Lazy.Char8 as B8
 import qualified Data.ByteString as B
-import qualified Data.Vector as V
 import Data.Vector(Vector, (!))
+import qualified Data.Vector as V
+import Data.Time.Clock
+  
 import System.Random
-import System.Log.Logger
+import Data.Typeable
+import Control.Exception
+import Control.Concurrent.STM
+import Control.Concurrent.STM.TVar
 
-data ResponseData = ResponseData String T.Text (Either T.Text B8.ByteString)| NoData
-type Downloader = String -> IO (Response B8.ByteString)
+import System.Log.Logger
+import System.Log.Handler.Syslog
+import System.Log.Handler.Simple
+import System.Log.Handler (setFormatter)
+import System.Log.Formatter
+
+
+type CookieUpdater = CookieJar -> IO CookieJar
+
+data Downloader = Downloader { _downloader_manager :: Manager
+                             , _downloader_mock_agents :: Vector B.ByteString
+                             , _downloader_fix_agent :: Maybe Int
+                             , _downloader_logger :: Logger
+                             , _downloader_cookie :: Maybe (TVar CookieJar)
+                             , _downloader_cookie_updater :: Maybe CookieUpdater
+                             }
+
+type Downloader2 = String
+                   -> (Request -> IO Request)
+                   -> (Request -> Response B8.ByteString -> IO ())
+                   -> IO (Response B8.ByteString)
 
 data RoutingContext = RoutingContext{ _manager :: Manager
                                     , _mockAgents :: Vector B.ByteString
                                     , _loggerSet :: Int --FIXME
                                     }
 
-newDownloader :: IO Downloader
-newDownloader = do
+newDownloader :: Bool -> IO Downloader
+newDownloader fixAgent = do
+  manager <- newManager tlsManagerSettings
+  let agents = V.fromList ax
+  fixAgent <- if fixAgent
+              then Just <$> randomRIO (0, V.length agents - 1)
+              else pure Nothing
+  logger <-  initLogger 
+  return $ Downloader manager agents fixAgent logger Nothing Nothing
+  where
+    ax |null userAgents = [defaultAgent]
+       |otherwise = userAgents
+  
+    defaultAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:49.0) Gecko/20100101 Firefox/49.0"
+  
+    initLogger = do
+      updateGlobalLogger "scraha.spider" (setLevel DEBUG)
+      getLogger "scraha.downloader"
+      
+installCookieUpdater :: Downloader -> CookieJar -> CookieUpdater -> IO Downloader
+installCookieUpdater dl c0 updater = do
+  cookieVar <- newTVarIO c0
+  return $ dl{ _downloader_cookie = Just cookieVar
+             , _downloader_cookie_updater = Just updater}
+
+download :: Downloader -> String -> IO (Response B8.ByteString, NominalDiffTime)
+download dl url  = timing $ do
+  req <- parseRequest url >>=
+         addHeaders >>=
+         useCookie (_downloader_cookie dl)
+  
+  response <- httpLbs req (_downloader_manager dl)
+  
+  updateCookie (_downloader_cookie dl) req response 
+  return response
+  where
+    {-# INLINE addHeaders #-}
+    addHeaders req = do
+      agent <- let agents = _downloader_mock_agents dl
+                   fixAgent = _downloader_fix_agent dl
+               in maybe (randChoose agents) (\i -> return $ agents V.! i) fixAgent
+      let headers = requestHeaders req
+      return $ req {requestHeaders = headers ++
+                        [(hUserAgent, agent)
+                       ,(hAccept, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                       ,(hAcceptLanguage, "zh,en-US;q=0.7,en;q=0.3")
+                       ,(hAcceptEncoding, "gzip, deflate, br")
+                       ,(hCacheControl, "max-age=0")
+                       ,("Upgrade-Insecure-Requests", "1")]}
+  
+    useCookie Nothing req0 = return req0
+    useCookie (Just cookieVar) req0 = do
+      c0 <- atomically (readTVar cookieVar)
+      c <- case _downloader_cookie_updater dl of
+             Nothing -> return c0
+             Just f -> f c0
+      now <- getCurrentTime
+      let (req, newCookie) = insertCookiesIntoRequest req0 c now
+      atomically $ writeTVar cookieVar c
+      return req
+
+    updateCookie Nothing _ _ = return ()
+    updateCookie (Just cookieVar) req resp  = do
+      now <- getCurrentTime
+      atomically $ modifyTVar cookieVar $ fst . (updateCookieJar resp req now)
+   
+      
+newDownloader2 :: IO Downloader2
+newDownloader2 = do
   context <- RoutingContext <$> newManager tlsManagerSettings
                             <*> return (V.fromList $ ax)
                             <*> (return 7788) -- FIXME
-  return $ download context
+  return $ download2 context 
   where
     ax |null userAgents = [defaultAgent]
        |otherwise = userAgents
     defaultAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:49.0) Gecko/20100101 Firefox/49.0"
 
 
-download :: RoutingContext -> String -> IO (Response B8.ByteString)
-download (RoutingContext manager agents loggerSet) url = do
-  req <- parseRequest url >>= addHeaders
+download2 :: RoutingContext -> Downloader2 -- String -> (Request -> IO Request) -> IO (Response B8.ByteString)
+download2 (RoutingContext manager agents loggerSet) url before after = do
+  req' <- parseRequest url >>= addHeaders
+  req <- before req'
   response <- httpLbs req manager
+  _ <- after req response
   return response
   where
     {-# INLINE addHeaders #-}

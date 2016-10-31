@@ -3,6 +3,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE ExistentialQuantification #-}
+
 module TMM.Types where
 
 import Control.Concurrent.Chan (Chan)
@@ -15,6 +16,7 @@ import Text.HTML.TagSoup (Tag)
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TVar
 import Data.Typeable
+import Data.Time.Clock
 
 type TextTag = Tag Text
 type Meta = HashMap Text Text
@@ -178,3 +180,10 @@ instance NFData YieldData where
 
 instance NFData ResultData where
   rnf (ResultData td ent) = rnf td `seq` rnf ent
+
+timing :: IO a -> IO (a, NominalDiffTime)
+timing p = do
+  t0 <- getCurrentTime
+  r <- p
+  t1 <- getCurrentTime
+  return (r, diffUTCTime t1 t0)
