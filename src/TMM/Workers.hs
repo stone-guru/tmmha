@@ -9,6 +9,7 @@ module TMM.Workers(
   Summary(..),
   Config(..),
   CookieUpdater,
+  CookieAction(..),
   newSpider,
   startSpider,
   waitStarted,
@@ -20,6 +21,7 @@ module TMM.Workers(
   executeAction,
   defaultConfig,
   transmitParser,
+  verbose
   )where
 
 import TMM.Types
@@ -61,6 +63,7 @@ import System.Log.Formatter
 import Debug.Trace
 import Data.Typeable
 import Data.Time.Clock
+import Text.Printf
 
 class Octopus a where
   newInstance :: ScraParser -> ScraProcessor -> IO a
@@ -69,7 +72,6 @@ class Octopus a where
 
 --
 
-data SessionData = forall hs. Typeable hs => SessionData hs
 
 type ScraResponse = Response LB8.ByteString
 data ResponseData = ResponseData TaskDesc ScraResponse
@@ -97,7 +99,8 @@ data Config = Config { _cParsers :: [(Text, ScraParser, DataFormat)] -- ^ Name, 
                      , _cDownThreadNum :: Int                        -- ^ How many download thread
                      , _cDownloadInterval :: Int                     -- ^ Download action interval
                      , _cEnableCookie :: Bool
-                     , _cInitSession :: IO (Maybe (CookieJar, SessionData))
+                     , _cInitSession :: Maybe (Downloader
+                                               -> IO (Either String (CookieJar, SessionData)))
                      , _cCookieAction :: Maybe CookieAction
                      , _cFixAgent :: Bool
                      }
@@ -155,7 +158,7 @@ defaultConfig = Config [] --parsers
                 1 -- num of download thread
                 500 -- ms interval between download
                 False -- enable cookie
-                (return Nothing) -- session initialial function
+                Nothing -- session initialial function
                 Nothing -- cookie action
                 False -- use fixed agent in request headers
 
@@ -198,32 +201,36 @@ newSpider config@(Config pars prcs ndt downInter _ _ _ _) = do
 
 startSpider :: Spider -> StartsUrls -> IO ()
 startSpider spider urls = do
-  downloader <- DL.newDownloader (_cFixAgent config)
-                >>= installSessionHandler
+  d_ <- DL.newDownloader (_cFixAgent config) >>= installSessionHandler
+  case d_ of
+    (Left msg) -> error msg
+    (Right downloader) -> do
+      forM_ [1 .. _cDownThreadNum config] $
+        \i -> let name = "downloader" ++ show i
+              in  forkIO (downloadRoute spider downloader name)
 
-  forM_ [1 .. _cDownThreadNum config] $
-    \i -> let name = "downloader" ++ show i
-          in  forkIO (downloadRoute spider downloader name)
+      forkIO (processRoute spider >> putMVar (_finishFlag spider) True) --FIXME: error handling
+      info spider "Scraha spider start"
 
-  forkIO (processRoute spider >> putMVar (_finishFlag spider) True) --FIXME: error handling
-  info spider "Scraha spider start"
-
-  atomically $ mapM_  feedStartsUrl urls
-  putMVar (_startFlag spider) True
+      atomically $ mapM_  feedStartsUrl urls
+      putMVar (_startFlag spider) True
   where
     config = _config spider
     feedStartsUrl (url, meta, parName) = writeChannel (_taskQueue spider) $
                                             TaskData $ TaskDesc url meta parName
 
+    installSessionHandler :: DL.Downloader -> IO (Either String DL.Downloader)
     installSessionHandler downloader
       |  _cEnableCookie config =  do
-           sd_ <- _cInitSession config
-           case sd_ of
-             Just (cookieJar, hs) -> do
-               atomically $ writeTVar (_sessionData spider) (Just hs)
-               DL.installCookieUpdater downloader cookieJar updateCookieBySession
-             Nothing -> return downloader
-      |otherwise = return downloader
+           flip (maybe (return $ Right downloader)) (_cInitSession config) $
+             \f -> do
+               sd_ <- f downloader
+               case sd_ of
+                 Right (cookieJar, hs) -> do
+                   atomically $ writeTVar (_sessionData spider) (Just hs)
+                   Right <$> DL.installCookieUpdater downloader cookieJar updateCookieBySession
+                 Left msg -> return $ Left msg
+      |otherwise = return $ Right downloader
 
     updateCookieBySession :: CookieJar -> IO CookieJar
     updateCookieBySession cookie = do
@@ -348,10 +355,10 @@ processRoute spider = mapChannel "process" (_logger spider)
       return $ catMaybes lst
 
     dispatch ::  YieldData -> IO (Maybe TaskData)
-    dispatch (YieldData _ (YUrl td))  = return $ Just $ TaskData td
+    dispatch (YieldData _ (YUrl td))  = return . Just $ TaskData td
     dispatch yd = do
         let prc = getProcessor spider (_tdHandler $_ydDesc yd)
-        ((), dt) <- timing $! _prcExecute prc (yd2rd yd)
+        ((), dt) <- timing $! _prcExecute prc (yd2rd yd) --run processor
         atomically $ modifyTVar (_prcExecStat prc) (addExecRec dt)
         return Nothing
 
@@ -487,3 +494,14 @@ execStat0 = ExecStat 0 (toEnum 0)
 addExecRec :: NominalDiffTime -> ExecStat -> ExecStat
 addExecRec dt2 (ExecStat n dt1) = ExecStat (n + 1) (dt1 + dt2)
 
+verbose :: Summary -> IO ()
+verbose sum = do
+  putStrLn $ printf "Download: resources %d, total %.3f MB"
+    (_sDownloadCount sum) (toM $ _sDownloadBytes sum)
+  putStrLn $ "Parser statistics"
+  mapM_ (putStrLn . ("  " ++) . show) (_sParExecStat sum)
+  putStrLn $ "Processor statistics"
+  mapM_ (putStrLn . ("  " ++) . show) (_sPrcExecStat sum)
+  where
+    toM :: Int -> Double
+    toM x = fromIntegral x / (1024 * 1024)

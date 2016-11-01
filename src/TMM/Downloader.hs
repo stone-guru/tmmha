@@ -10,6 +10,7 @@ module TMM.Downloader(
   Downloader(..),
   newDownloader,
   download,
+  getAgent,
   installCookieUpdater
   )
 where
@@ -40,7 +41,7 @@ import System.Log.Handler.Syslog
 import System.Log.Handler.Simple
 import System.Log.Handler (setFormatter)
 import System.Log.Formatter
-
+import Control.DeepSeq
 
 type CookieUpdater = CookieJar -> IO CookieJar
 
@@ -52,25 +53,15 @@ data Downloader = Downloader { _downloader_manager :: Manager
                              , _downloader_cookie_updater :: Maybe CookieUpdater
                              }
 
-type Downloader2 = String
-                   -> (Request -> IO Request)
-                   -> (Request -> Response B8.ByteString -> IO ())
-                   -> IO (Response B8.ByteString)
-
-data RoutingContext = RoutingContext{ _manager :: Manager
-                                    , _mockAgents :: Vector B.ByteString
-                                    , _loggerSet :: Int --FIXME
-                                    }
-
 newDownloader :: Bool -> IO Downloader
 newDownloader fixAgent = do
   manager <- newManager tlsManagerSettings
   let agents = V.fromList ax
-  fixAgent <- if fixAgent
-              then Just <$> randomRIO (0, V.length agents - 1)
-              else pure Nothing
+  fixedAgent <- if fixAgent
+                then Just <$> randomRIO (0, V.length agents - 1)
+                else pure Nothing
   logger <-  initLogger 
-  return $ Downloader manager agents fixAgent logger Nothing Nothing
+  return $ Downloader manager agents fixedAgent logger Nothing Nothing
   where
     ax |null userAgents = [defaultAgent]
        |otherwise = userAgents
@@ -87,8 +78,13 @@ installCookieUpdater dl c0 updater = do
   return $ dl{ _downloader_cookie = Just cookieVar
              , _downloader_cookie_updater = Just updater}
 
+getAgent :: Downloader -> B.ByteString
+getAgent downloader = let i = maybe 0 id (_downloader_fix_agent downloader)
+                      in (_downloader_mock_agents downloader) ! i
+
+
 download :: Downloader -> String -> IO (Response B8.ByteString, NominalDiffTime)
-download dl url  = timing $ do
+download dl url  = timing' $ do
   req <- parseRequest url >>=
          addHeaders >>=
          useCookie (_downloader_cookie dl)
@@ -102,7 +98,7 @@ download dl url  = timing $ do
     addHeaders req = do
       agent <- let agents = _downloader_mock_agents dl
                    fixAgent = _downloader_fix_agent dl
-               in maybe (randChoose agents) (\i -> return $ agents V.! i) fixAgent
+               in maybe (randChoose agents) (\i -> return $ agents ! i) fixAgent
       let headers = requestHeaders req
       return $ req {requestHeaders = headers ++
                         [(hUserAgent, agent)
@@ -129,37 +125,6 @@ download dl url  = timing $ do
       atomically $ modifyTVar cookieVar $ fst . (updateCookieJar resp req now)
    
       
-newDownloader2 :: IO Downloader2
-newDownloader2 = do
-  context <- RoutingContext <$> newManager tlsManagerSettings
-                            <*> return (V.fromList $ ax)
-                            <*> (return 7788) -- FIXME
-  return $ download2 context 
-  where
-    ax |null userAgents = [defaultAgent]
-       |otherwise = userAgents
-    defaultAgent = "Mozilla/5.0 (X11; Linux x86_64; rv:49.0) Gecko/20100101 Firefox/49.0"
-
-
-download2 :: RoutingContext -> Downloader2 -- String -> (Request -> IO Request) -> IO (Response B8.ByteString)
-download2 (RoutingContext manager agents loggerSet) url before after = do
-  req' <- parseRequest url >>= addHeaders
-  req <- before req'
-  response <- httpLbs req manager
-  _ <- after req response
-  return response
-  where
-    {-# INLINE addHeaders #-}
-    addHeaders req = do
-      agent <- randChoose agents
-      return $ req {requestHeaders =
-                       [(hUserAgent, agent)
-                       ,(hAccept, "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                       ,(hAcceptLanguage, "zh,en-US;q=0.7,en;q=0.3")
-                       ,(hAcceptEncoding, "gzip, deflate, br")
-                       ,(hCacheControl, "max-age=0")
-                       ,("Upgrade-Insecure-Requests", "1")]}
-
 s2b :: String -> B.ByteString
 s2b s = B.pack $ map (fromIntegral . fromEnum) s
 

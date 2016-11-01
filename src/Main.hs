@@ -41,6 +41,9 @@ import Network.HTTP.Client
 import qualified Data.ByteString.Char8 as B8
 import qualified Data.ByteString.Lazy.Char8 as LB8
 
+import Text.Regex.TDFA
+import Text.Regex.TDFA.ByteString
+
 data AppContext = AppContext { _dbConnection :: DB.Connection
                              , _stageNum :: Int
                              }
@@ -57,10 +60,11 @@ main = do
       return S.defaultConfig {
         S._cParsers = [ ("list", listPageParser, Tags)
                       , ("detail", detailPageParser, Tags)
-                      , ("photo" , photoPageParser, UtfText)
+                      , ("photo" , photoPageParser, RawBinary)
                       , ("image" , S.transmitParser, RawBinary)],
         S._cProcessors = [ ("detail", detailInfoProcessor ctx)
-                         , ("image", imageProcessor)]
+                         , ("image", imageProcessor)],
+        S._cDownloadInterval = 0
         }
         
     parseArgs (a:b:_) = (read a::Int, read b::Int)
@@ -145,7 +149,8 @@ detailInfoProcessor ctx (ResultData _ (RJson v)) = do
         case parse (paramParser $ _stageNum ctx)  v of
           Error s -> error s
           Success params -> query (_dbConnection ctx)
-                              "select 1 from insert_model(?,?,?,?,?,?,?,?,?,?)"  params :: IO [Only Int]
+                              "select 1 from insert_model(?,?,?,?,?,?,?,?,?,?)"
+                              params :: IO [Only Int]
   where
     paramParser st = withObject "modelinfo" $ \o -> do
       uid :: Int <- o .: "uid"
@@ -164,44 +169,39 @@ valueProcessor rd = print (resultValue rd)
 
 photoPageParser :: SourceData -> IO [YieldData]
 photoPageParser src = trace "photoPageParser run" $ do
-  urls <- searchImageUrl nImage (originText src)
+  --urls <- searchImageUrl nImage (originText src)
+  let nImage = 2
+  let urls = searchUrl nImage (originBytes src)
   return $ flip map (zip [1..] urls) $ \(i, url) ->
-    yieldUrl src (T.append "https:" url) (M.insert "imageIndex" (asText i) $ metaOf src) "image"
+    yieldUrl src url (M.insert "imageIndex" (asText i) $ metaOf src) "image"
   where
-    asText = T.pack.show
-    nImage = 2
+    searchUrl 0 _ = []
+    searchUrl i bx = let (_, _, rest, subGroup)
+                           = bx =~  ptn
+                             :: (B8.ByteString, B8.ByteString, B8.ByteString, [B8.ByteString])
+                     in case subGroup of
+                          [url] -> T.append "https:" (E.decodeUtf8 url) : searchUrl (i - 1) rest
+                          [] -> []
+    ptn = "bigUrl&quot;:&quot;([^&]*)" :: B8.ByteString  
+    asText = T.pack . show
 
 imageProcessor :: ResultData -> IO ()
 imageProcessor (ResultData td (RBinary bytes)) = do
-  let meta = _tdMeta td
-  let index = M.lookupDefault "1" "imageIndex" meta 
-  let fn =  FP.fromText $ T.concat ["./images/" , meta ! "uid", "-",  meta ! "name", "-", index, ".jpg"]
   T.putStrLn $ T.append "save image file "  (either id id $ FP.toText fn)
   B8.writeFile (FP.encodeString fn) bytes
-
-searchImageUrl :: Int -> T.Text -> IO [T.Text]
-searchImageUrl n ctx = do
-  re <- R.regex [] "bigUrl&quot;:&quot;([^&]*)"
-  R.setText re ctx
-  -- T.putStrLn $ R.pattern re
-  b <- R.find re 0
-  loop b n ctx re []
   where
-    loop False _ _ _ sx = return sx
-    loop _ 0 _ _ sx = return sx
-    loop True i s re sx = do
-      start <- R.start_ re 1
-      end <-   R.end_ re 1
-      --putStrLn $ "found one" ++ show start ++ ", " ++ show end
-      if start > -1
-        then  do
-          let ss = sub s (fromEnum start) (fromEnum end)
-          --T.putStrLn $ ss
-          b <- R.findNext re
-          loop b (i - 1) s re (ss:sx)
-        else do
-          b <- R.findNext re
-          loop b (i - 1) s re sx
-    sub s start end = let s1 = T.take end s
-                          s2 = T.drop start s1
-                      in s1 `seq` s2
+    meta = _tdMeta td
+    index = M.lookupDefault "1" "imageIndex" meta
+    suffix = imageFormat bytes
+    fn =  FP.fromText $ T.concat ["./images/"
+                                   , meta ! "uid", "-",  meta ! "name", "-", index, suffix]
+
+imageFormat :: B8.ByteString -> Text
+imageFormat bytes
+      |"\o377\o330" `B8.isPrefixOf` bytes = ".jpg"
+      |"\o211PNG\r\n\o032\n"  `B8.isPrefixOf` bytes = ".png"
+      |"GIF87a" `B8.isPrefixOf` bytes = ".gif"
+      |"GIF89a" `B8.isPrefixOf` bytes = ".gif"
+      |"BM" `B8.isPrefixOf` bytes = ".bmp"
+      |otherwise = ".jpg"
+

@@ -21,14 +21,6 @@ import Data.Time.Clock
 type TextTag = Tag Text
 type Meta = HashMap Text Text
 
--- encap :: Typeable a => a -> SData
--- encap a = SData a
-
--- uncap :: Typeable a => SData -> a
--- uncap (SData x) = case cast x of
---   Just x -> x
---   _ -> error "cannot convert "
-
 data TaskDesc = TaskDesc { _tdUrl :: !Text
                          , _tdMeta :: !Meta
                          , _tdHandler :: !Text
@@ -87,6 +79,8 @@ class ScraData a where
   metaOf_ :: a -> Meta
   bodyAsBinary :: a -> ByteString
   bodyAsText :: a -> Text
+
+data SessionData = forall hs. (Show hs, Typeable hs) => SessionData hs
 
 taskDesc :: SourceData -> TaskDesc
 taskDesc (SourceData td _ _) = td
@@ -162,6 +156,7 @@ instance NFData YieldEnt where
   rnf (YText t) = rnf t
   rnf (YJson v) = rnf v
   rnf (YUrl td) = rnf td 
+  rnf (YData d) = rnf d
 
 instance NFData ResultEnt where
   rnf (RBinary b) = rnf b
@@ -181,9 +176,16 @@ instance NFData YieldData where
 instance NFData ResultData where
   rnf (ResultData td ent) = rnf td `seq` rnf ent
 
-timing :: IO a -> IO (a, NominalDiffTime)
+timing :: NFData a => IO a -> IO (a, NominalDiffTime)
 timing p = do
   t0 <- getCurrentTime
   r <- p
+  t1 <- r `deepseq` getCurrentTime
+  return (r, diffUTCTime t1 t0)
+
+timing' :: IO a -> IO (a, NominalDiffTime)
+timing' p = do
+  t0 <- getCurrentTime
+  !r <- p
   t1 <- getCurrentTime
   return (r, diffUTCTime t1 t0)

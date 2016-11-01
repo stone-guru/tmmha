@@ -160,7 +160,7 @@ textOf :: Text -> Select Text
 textOf crit = fromJust <$> textOf_ crit
 
 textOf_ :: Text -> Select (Maybe Text)
-textOf_ crit =  at_ crit $  bodyText <$> nodes 
+textOf_ crit =  at_ crit $  trim . bodyText <$> nodes 
 
 textAfter :: Text -> Select Text
 textAfter crit = fromJust <$> textAfter_ crit

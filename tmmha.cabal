@@ -17,7 +17,8 @@ build-type:          Simple
 cabal-version:       >=1.10
 
 executable tmmha
-  main-is:             Main.hs
+  main-is:          Main.hs
+                    -- ZTopic.hs
                     -- ZhiHu.hs
   -- other-modules:       
   other-extensions: FlexibleContexts, RankNTypes, ScopedTypeVariables, MultiParamTypeClasses, TypeFamilies, FlexibleInstances, PatternGuards, TypeSynonymInstances, DeriveDataTypeable, GeneralizedNewtypeDeriving, ExistentialQuantification, CPP, NoMonomorphismRestriction, OverlappingInstances, PostfixOperators, StandaloneDeriving, FunctionalDependencies, KindSignatures, UndecidableInstances, RebindableSyntax, Rank2Types, ParallelListComp, DoAndIfThenElse, ImpredicativeTypes
