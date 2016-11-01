@@ -171,17 +171,16 @@ photoPageParser :: SourceData -> IO [YieldData]
 photoPageParser src = trace "photoPageParser run" $ do
   --urls <- searchImageUrl nImage (originText src)
   let nImage = 2
-  let urls = searchUrl nImage (originBytes src)
+  let urls = take nImage $ searchUrl (originBytes src)
   return $ flip map (zip [1..] urls) $ \(i, url) ->
     yieldUrl src url (M.insert "imageIndex" (asText i) $ metaOf src) "image"
   where
-    searchUrl 0 _ = []
-    searchUrl i bx = let (_, _, rest, subGroup)
-                           = bx =~  ptn
-                             :: (B8.ByteString, B8.ByteString, B8.ByteString, [B8.ByteString])
-                     in case subGroup of
-                          [url] -> T.append "https:" (E.decodeUtf8 url) : searchUrl (i - 1) rest
-                          [] -> []
+    searchUrl :: B8.ByteString -> [Text]
+    searchUrl bytes = L.unfoldr (\s -> match $ s =~  ptn) bytes 
+    match :: (B8.ByteString, B8.ByteString, B8.ByteString, [B8.ByteString])
+          -> Maybe (Text, B8.ByteString)
+    match (_, _, _, []) = Nothing
+    match (_, _, rest, [!url]) = Just (T.append "https:" (E.decodeUtf8 url), rest)
     ptn = "bigUrl&quot;:&quot;([^&]*)" :: B8.ByteString  
     asText = T.pack . show
 
