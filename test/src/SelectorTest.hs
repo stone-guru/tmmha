@@ -26,6 +26,7 @@ import qualified Data.HashMap.Strict as M
 import Debug.Trace
 import Data.IntMap (IntMap)
 import qualified Data.IntMap as IntMap
+import Data.Functor.Identity
 
 allTests = TestList [testAt, p20Tests, testNths, testLasts]
 
@@ -120,7 +121,8 @@ testNthLast1 = TestLabel "nth last test 1" $
 
 testLasts = TestList [testLast1, testLast2, testLast3, testLast4, testNthLast1]
   
-html2Test sel = let ctx = initContext $ parseTags html2
+html2Test :: Select s -> s
+html2Test sel = let ctx = initContext () $ parseTags html2
                 in evalSelect sel ctx
   where
     html2 = T.concat [
@@ -148,14 +150,14 @@ page20 = "/home/bison/sources/haskell/tmmha/test/data/list-page-20.html"
 runP20Sel :: Select a -> IO a
 runP20Sel sel = do
   tags <- parseFile page20
-  return $ evalSelect sel (initContext tags)
+  return $ evalSelect sel (initContext () tags)
 
 m8509 = "/home/bison/sources/haskell/tmmha/test/data/model_info_28168509.html"
 
 runM8509Sel :: Select a -> IO a
 runM8509Sel sel = do
   tags <- parseFile m8509
-  return $ evalSelect sel (initContext tags)
+  return $ evalSelect sel (initContext () tags)
 
 parseFile :: String -> IO [TextTag]
 parseFile fn = do

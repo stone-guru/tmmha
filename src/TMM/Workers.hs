@@ -175,10 +175,18 @@ newSpider config@(Config pars prcs ndt downInter _ _ _ _) = do
     dc <- newTVar 0
     db <- newTVar 0
     sd <- newTVar Nothing
-    return $ Spider taskq respq parMap prcMap
-                    startFlag finishFlag dc db
-                    logger config sd
-
+    return $ Spider { _taskQueue = taskq
+                    , _respQueue = respq
+                    , _parserMap = parMap
+                    , _processorMap = prcMap
+                    , _startFlag = startFlag
+                    , _finishFlag = finishFlag
+                    , _downloadCount = dc
+                    , _downloadBytes = db
+                    , _sessionData = sd
+                    , _logger = logger
+                    , _config = config
+                    }
   where
     createParserMap pars = do
       pdx <- mapM (\(pn, parser, df) -> ParserRec pn parser df <$> newTVar execStat0) pars

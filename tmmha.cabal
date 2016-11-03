@@ -62,4 +62,4 @@ executable tmmha
   ghc-options: -O2 -rtsopts -threaded
                -- -prof -auto-all -caf-all
                -dynamic
-               -- -fforce-recomp 
+               -- -fforce-recomp

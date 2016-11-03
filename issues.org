@@ -1,11 +1,11 @@
 * Scraha Issues
-** features
+** application features
 *** DONE store crawled model information to postgresql database as tmmpy
+
 *** DONE hire postgresql-simple package   
-*** DONE support user application using there own context and sharing it between parsers and processors
-    function curry is enough
-*** image format detect
+*** DONE image format detect
     detect image format from reponsed bytestring instead of url file extension.
+** selector features
 *** DONE add nth selector support in Selector module
 *** DONE add reverse order nth selector support in Selector module
 *** DONE restrict node search range within its parent
@@ -13,8 +13,15 @@
 be in the branch of .level2. if go out of .level2, search should fail.
 *** DONE provide textAfter function
     textAfter function can get text content after a certain node
-** TODO support cookies to continue Douban books
+** spider framework feature
+*** DONE support user application using there own context and sharing it between parsers and processors
+    function curry is enough, but more feature is adding continuslly.
+*** DONE support cookies to continue Douban books
    Douban have detected it's a spider and bang it
+*** DONE parser can retuan any data type instead of only value, and processor can receive it
+   Bingo! by Phantom types
+*** TODO use different parser types to indicate different data requirement.
+   for example, some parser just need parsed tags, and some bioplate codes should be eliminated.
 ** bugs
 *** DONE process function error cause whole loop stoped
  exception from injected function within bracket cause loop stoped.

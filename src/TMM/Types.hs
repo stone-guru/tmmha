@@ -65,6 +65,11 @@ data ResultData = ResultData{ _rdDesc :: !TaskDesc
                             , _rdEntity :: ResultEnt
                             }
 
+-- data ScrahaParser = ValueSelector (TaskDesc -> Selector Value)
+--                   | ValueMetaSelector (TaskDesc -> Selector (Value, Meta))
+--                   | forall a. Typeable a => DataSelector (TaskDesc -> Selector a)
+--                   | forall a. Typeable a => DataMetaSelector (TaskDesc -> Selector (a, Meta))
+
 type ScraParser = SourceData -> IO [YieldData]
 type ScraProcessor = ResultData -> IO ()
 
