@@ -110,10 +110,10 @@ performLogin downloader cookieJar0 xsrf = do
                                        "application/x-www-form-urlencoded; charset=UTF-8")
                                    ]}
     postForm = LB.concat ["_xsrf=", LB.fromStrict $ xsrfValue xsrf ,
-                          "&password=timeismoney",
+                          "&password=**",
                            "&captcha_type=cn",
                            "&remember_me=true",
-                           "&phone_num=13880281637"]
+                           "&phone_num=**"]
 
 processEntryPage :: Downloader -> IO (CookieJar, Xsrf)
 processEntryPage downloader = do
